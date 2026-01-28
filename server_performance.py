@@ -32,7 +32,7 @@ def receber_webhook():
             with open(nome_arquivo, 'wb') as f:
                 f.write(r.content)
                 
-            print(f"Arquivo salvo na pasta: {nome_arquivo}")
+            print(f"✅ SUCESSO! Arquivo salvo na pasta: {nome_arquivo}")
             
         except Exception as e:
             print(f"Erro ao baixar o arquivo: {e}")
@@ -48,8 +48,8 @@ def receber_webhook():
     return "OK", 200
 
 if __name__ == '__main__':
-    print(f"porta 5000...")
-    print(f"salvos na pasta: ./{PASTA_DESTINO}")
-    app.run(port=5000)
-
-
+    # O Render escolhe a porta sozinho, precisamos pegar ela
+    port = int(os.environ.get("PORT", 10000))
+    # host='0.0.0.0' é OBRIGATÓRIO na nuvem para receber conexões de fora
+    print(f"Rodando na porta {port}...")
+    app.run(host='0.0.0.0', port=port)
