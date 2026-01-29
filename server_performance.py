@@ -2,6 +2,7 @@
 from flask import Flask, request, send_file
 import requests
 import os
+import zipfile # Biblioteca para criar o pacotão
 
 # %%
 app = Flask(__name__)
@@ -11,12 +12,8 @@ PASTA_DESTINO = "relatorios_baixados"
 if not os.path.exists(PASTA_DESTINO):
     os.makedirs(PASTA_DESTINO)
 
-# Variável global para lembrar o nome do último arquivo (memória curta do servidor)
-ultimo_arquivo_gerado = None
-
 @app.route('/webhook', methods=['POST'])
 def receber_webhook():
-    global ultimo_arquivo_gerado
     print("Recebendo dados...")
     
     dados = request.json
@@ -26,42 +23,54 @@ def receber_webhook():
         url_download = dados['response']['url']
         data_fim = dados['response'].get('endDate', 'data_desconhecida')
         
+        # Cria um nome único usando a data e um pedaço da URL para não substituir arquivos iguais
+        # Ex: performance_2025-01-01_xyz123.zip
+        id_unico = url_download.split('/')[-1][-5:] 
+        nome_arquivo = f"performance_{data_fim}_{id_unico}.zip"
+        caminho_completo = os.path.join(PASTA_DESTINO, nome_arquivo)
+        
         print(f"Baixando relatório de {data_fim}...")
         
         try:
-            # Baixa o arquivo do link
             r = requests.get(url_download)
-            nome_arquivo_completo = f"{PASTA_DESTINO}/performance_{data_fim}.zip"
-            
-            with open(nome_arquivo_completo, 'wb') as f:
+            with open(caminho_completo, 'wb') as f:
                 f.write(r.content)
             
-            # Atualiza a memória do servidor
-            ultimo_arquivo_gerado = nome_arquivo_completo
-                
-            print(f"✅ SUCESSO! Arquivo salvo: {nome_arquivo_completo}")
+            print(f"Arquivo salvo: {nome_arquivo}")
             
         except Exception as e:
             print(f"Erro ao baixar o arquivo: {e}")
-            return "Erro no download interno", 500
+            return "Erro interno", 500
             
     else:
         print("Recebi webhook, mas sem URL de download.")
 
     return "OK", 200
 
-# --- NOVA ROTA MÁGICA ---
+# --- ROTA DO PACOTÃO ---
 @app.route('/meus-dados', methods=['GET'])
-def baixar_para_pc():
-    global ultimo_arquivo_gerado
+def baixar_tudo_de_uma_vez():
+    # Nome do arquivo final que você vai baixar
+    nome_pacote = "TODOS_RELATORIOS.zip"
     
-    if ultimo_arquivo_gerado and os.path.exists(ultimo_arquivo_gerado):
-        print(f"Enviando arquivo {ultimo_arquivo_gerado} para o João...")
-        return send_file(ultimo_arquivo_gerado, as_attachment=True)
-    else:
-        return "Nenhum arquivo foi gerado recentemente ou o servidor reiniciou.", 404
+    # Lista todos os arquivos que estão na pasta
+    arquivos_na_pasta = os.listdir(PASTA_DESTINO)
+    
+    if not arquivos_na_pasta:
+        return "A pasta está vazia! Rode o script de solicitar primeiro.", 404
+
+    print(f"📦 Empacotando {len(arquivos_na_pasta)} arquivos...")
+
+    # Cria o ZIPÃO
+    with zipfile.ZipFile(nome_pacote, 'w') as zipf:
+        for arquivo in arquivos_na_pasta:
+            caminho_arquivo = os.path.join(PASTA_DESTINO, arquivo)
+            # Adiciona o arquivo dentro do zip
+            zipf.write(caminho_arquivo, arcname=arquivo)
+            
+    print("Enviando...")
+    return send_file(nome_pacote, as_attachment=True)
 
 if __name__ == '__main__':
-    # Configuração para rodar na nuvem
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
