@@ -4,7 +4,7 @@ import re
 import requests
 import zipfile
 import pyodbc
-from flask import Flask, request
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
@@ -93,6 +93,17 @@ def receber_webhook():
     except Exception as e:
         print(f"Erro Crítico: {e}")
         return f"Erro: {str(e)}", 500
+
+# Adicione isso no final do arquivo, antes do if __name__
+@app.route('/meu-ip', methods=['GET'])
+def get_ip():
+    try:
+        # Pergunta para um serviço externo qual é o meu IP público
+        ip = requests.get('https://api.ipify.org').text
+        return jsonify({'ip_render': ip})
+    except Exception as e:
+        return jsonify({'erro': str(e)}), 500
+
 
 if __name__ == '__main__':
     # Porta 10000 é padrão do Render
