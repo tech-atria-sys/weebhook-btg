@@ -8,22 +8,18 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# --- CONFIGURAÇÕES (Lendo suas variáveis exatas) ---
-SERVER_NAME = os.getenv("SERVER_NAME")       # Endereço do servidor
-DATABASE_NAME = os.getenv("DATABASE_NAME")   # Nome do banco
-USERNAME = os.getenv("USERNAME")             # Usuário
-PASSWORD = os.getenv("PASSWORD")             # Senha
+# --- CONFIGURAÇÕES ---
+SERVER_NAME = os.getenv("SERVER_NAME")
+DATABASE_NAME = os.getenv("DATABASE_NAME")
+USERNAME = os.getenv("USERNAME")
+PASSWORD = os.getenv("PASSWORD")
+WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN") 
 
-# Adicionei essa aqui para validar a segurança do Webhook (quem chama sua API)
-WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN")   
-
-BTG_CLIENTE_ID = os.getenv("BTG_CLIENTE_ID")
-BTG_CLIENTE_SECRET = os.getenv("BTG_CLIENTE_SECRET")
-
-# String de Conexão Atualizada
+# String de Conexão
 CONN_STR = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SERVER_NAME};DATABASE={DATABASE_NAME};UID={USERNAME};PWD={PASSWORD};TrustServerCertificate=yes"
 
 def extrair_conta_do_nome(nome_arquivo):
+    # Tenta achar numeros no nome do arquivo (ex: Relatorio_12345.pdf -> 12345)
     match = re.search(r'(\d+)', nome_arquivo)
     if match:
         return match.group(1)
@@ -31,47 +27,54 @@ def extrair_conta_do_nome(nome_arquivo):
 
 @app.route('/webhook', methods=['POST'])
 def receber_webhook():
-    # 1. Verifica se quem chamou tem a senha correta (Token na URL)
+    # 1. Segurança
     token_recebido = request.args.get('token')
-    
-    # Se você não configurou o WEBHOOK_TOKEN no Render, ele avisa
-    if not WEBHOOK_TOKEN:
-        print("AVISO: Variável WEBHOOK_TOKEN não configurada no Render.")
-    
     if token_recebido != WEBHOOK_TOKEN:
-        return "Acesso Negado (Token Inválido)", 403
+        return jsonify({"erro": "Token Invalido"}), 403
 
     dados = request.json
-    
     if not dados or 'response' not in dados:
-        return "Payload inválido", 400
+        return jsonify({"erro": "Payload invalido"}), 400
 
-    url_download = dados['response'].get('url')
-    conta_payload = dados['response'].get('accountNumber') 
-    data_ref = dados['response'].get('endDate')
-
-    if not url_download:
-        return "URL não encontrada", 400
-
+    # 2. Extração dos dados
     try:
-        print(f"⬇️ Baixando arquivo da conta {conta_payload}...")
+        url_download = dados['response'].get('url')
+        conta_payload = dados['response'].get('accountNumber') 
+        data_ref = dados['response'].get('endDate')
+
+        print(f"Recebido pedido para conta: {conta_payload}")
+
+        if not url_download:
+            return jsonify({"erro": "URL nao encontrada"}), 400
+
+        # 3. Download
+        print(f"Baixando arquivo...")
         r = requests.get(url_download, stream=True)
         r.raise_for_status()
 
-        print("🔌 Conectando ao Banco...")
+        # 4. Processamento do ZIP
+        arquivos_salvos = 0
+        
+        print("Conectando ao Banco de Dados...")
         conn = pyodbc.connect(CONN_STR)
         cursor = conn.cursor()
         
         with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            print(f"Arquivos dentro do ZIP: {z.namelist()}") # <--- LOG IMPORTANTE
+            
             for nome_arquivo in z.namelist():
+                # Verifica se é PDF (ignore case)
                 if nome_arquivo.lower().endswith('.pdf'):
                     
+                    print(f"📄 Processando PDF: {nome_arquivo}")
+                    
+                    # Prioriza a conta que veio no JSON, se não tiver, tenta pegar do nome do arquivo
                     conta_final = conta_payload if conta_payload else extrair_conta_do_nome(nome_arquivo)
                     
                     if conta_final:
                         pdf_bytes = z.read(nome_arquivo)
                         
-                        # MERGE (Atualiza ou Insere)
+                        # QUERY DE MERGE (Salva ou Atualiza)
                         sql_merge = """
                         MERGE dbo.relatorios_performance_atual AS Target
                         USING (SELECT ? AS ContaVal) AS Source
@@ -82,29 +85,42 @@ def receber_webhook():
                             INSERT (conta, arquivo_pdf, nome_arquivo, data_referencia, data_upload)
                             VALUES (?, ?, ?, ?, GETDATE());
                         """
-                        params = (str(conta_final), pdf_bytes, nome_arquivo, data_ref, str(conta_final), pdf_bytes, nome_arquivo, data_ref)
+                        
+                        # Parametros mapeados para os ? na ordem exata
+                        params = (
+                            str(conta_final),               # SELECT ? (Source)
+                            pdf_bytes, nome_arquivo, data_ref, # UPDATE SET (?, ?, ?)
+                            str(conta_final), pdf_bytes, nome_arquivo, data_ref # INSERT VALUES (?, ?, ?, ?)
+                        )
+                        
                         cursor.execute(sql_merge, params)
-                        print(f"✅ Conta {conta_final} salva com sucesso!")
-                    
-        conn.commit()
-        conn.close()
-        return "Processado", 200
+                        arquivos_salvos += 1
+                        print(f"Conta {conta_final} salva no banco!")
+                    else:
+                        print(f"Arquivo {nome_arquivo} ignorado: Não achei número da conta.")
+
+        # 5. Finalização
+        if arquivos_salvos > 0:
+            conn.commit()
+            print(f"COMMIT REALIZADO. Total salvos: {arquivos_salvos}")
+            conn.close()
+            return jsonify({"status": "Processado", "arquivos_salvos": arquivos_salvos}), 200
+        else:
+            print("NENHUM PDF ENCONTRADO NO ZIP.")
+            conn.close()
+            return jsonify({"status": "Alerta", "mensagem": "ZIP baixado, mas nenhum PDF encontrado dentro dele."}), 200
 
     except Exception as e:
-        print(f"Erro Crítico: {e}")
-        return f"Erro: {str(e)}", 500
+        print(f"ERRO CRÍTICO: {e}")
+        return jsonify({"erro": str(e)}), 500
 
-# Adicione isso no final do arquivo, antes do if __name__
 @app.route('/meu-ip', methods=['GET'])
 def get_ip():
     try:
-        # Pergunta para um serviço externo qual é o meu IP público
         ip = requests.get('https://api.ipify.org').text
         return jsonify({'ip_render': ip})
     except Exception as e:
         return jsonify({'erro': str(e)}), 500
 
-
 if __name__ == '__main__':
-    # Porta 10000 é padrão do Render
     app.run(host='0.0.0.0', port=10000)
