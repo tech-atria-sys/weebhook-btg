@@ -36,19 +36,29 @@ def receber_webhook():
     if not dados or 'response' not in dados:
         return jsonify({"erro": "Payload invalido"}), 400
 
-    # 2. Extração dos dados
+    # 2. Extração dos dados com fallback para identificar a conta
     try:
-        url_download = dados['response'].get('url')
-        conta_payload = dados['response'].get('accountNumber') 
-        data_ref = dados['response'].get('endDate')
+        res = dados.get('response', {})
+        url_download = res.get('url')
+        data_ref = res.get('endDate')
+        
+        # Tenta capturar a conta de múltiplas origens para evitar o "None"
+        conta_payload = (
+            res.get('accountNumber') or  # Opção 1: Dentro do response
+            dados.get('cge') or          # Opção 2: Raiz do JSON (CGE)
+            dados.get('accountNumber')   # Opção 3: Raiz do JSON
+        )
 
-        print(f"Recebido pedido para conta: {conta_payload}")
+        print(f"--- NOVA REQUISIÇÃO RECEBIDA ---")
+        print(f"Conta Identificada: {conta_payload}")
+        print(f"ID da Requisição: {dados.get('idPartnerRequest')}")
 
         if not url_download:
-            return jsonify({"erro": "URL nao encontrada"}), 400
+            print(f"ERRO: URL de download não enviada para a conta {conta_payload}")
+            return jsonify({"erro": "URL nao encontrada", "conta": conta_payload}), 400
 
         # 3. Download
-        print(f"Baixando arquivo...")
+        print(f"Baixando arquivo para conta {conta_payload}...")
         r = requests.get(url_download, stream=True)
         r.raise_for_status()
 
@@ -60,21 +70,18 @@ def receber_webhook():
         cursor = conn.cursor()
         
         with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-            print(f"Arquivos dentro do ZIP: {z.namelist()}") # <--- LOG IMPORTANTE
+            print(f"Arquivos dentro do ZIP: {z.namelist()}")
             
             for nome_arquivo in z.namelist():
-                # Verifica se é PDF (ignore case)
                 if nome_arquivo.lower().endswith('.pdf'):
-                    
                     print(f"📄 Processando PDF: {nome_arquivo}")
                     
-                    # Prioriza a conta que veio no JSON, se não tiver, tenta pegar do nome do arquivo
+                    # Usa a conta do payload ou extrai do nome do arquivo se falhar
                     conta_final = conta_payload if conta_payload else extrair_conta_do_nome(nome_arquivo)
                     
                     if conta_final:
                         pdf_bytes = z.read(nome_arquivo)
                         
-                        # QUERY DE MERGE (Salva ou Atualiza)
                         sql_merge = """
                         MERGE dbo.relatorios_performance_atual AS Target
                         USING (SELECT ? AS ContaVal) AS Source
@@ -86,18 +93,17 @@ def receber_webhook():
                             VALUES (?, ?, ?, ?, GETDATE());
                         """
                         
-                        # Parametros mapeados para os ? na ordem exata
                         params = (
-                            str(conta_final),               # SELECT ? (Source)
-                            pdf_bytes, nome_arquivo, data_ref, # UPDATE SET (?, ?, ?)
-                            str(conta_final), pdf_bytes, nome_arquivo, data_ref # INSERT VALUES (?, ?, ?, ?)
+                            str(conta_final), 
+                            pdf_bytes, nome_arquivo, data_ref, 
+                            str(conta_final), pdf_bytes, nome_arquivo, data_ref
                         )
                         
                         cursor.execute(sql_merge, params)
                         arquivos_salvos += 1
                         print(f"Conta {conta_final} salva no banco!")
                     else:
-                        print(f"Arquivo {nome_arquivo} ignorado: Não achei número da conta.")
+                        print(f"Arquivo {nome_arquivo} ignorado: ID da conta não identificado.")
 
         # 5. Finalização
         if arquivos_salvos > 0:
@@ -108,10 +114,10 @@ def receber_webhook():
         else:
             print("NENHUM PDF ENCONTRADO NO ZIP.")
             conn.close()
-            return jsonify({"status": "Alerta", "mensagem": "ZIP baixado, mas nenhum PDF encontrado dentro dele."}), 200
+            return jsonify({"status": "Alerta", "mensagem": "Nenhum PDF processado."}), 200
 
     except Exception as e:
-        print(f"ERRO CRÍTICO: {e}")
+        print(f"ERRO CRÍTICO no processamento: {e}")
         return jsonify({"erro": str(e)}), 500
 
 @app.route('/meu-ip', methods=['GET'])
