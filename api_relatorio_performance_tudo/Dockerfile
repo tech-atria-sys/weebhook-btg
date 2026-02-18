@@ -27,4 +27,4 @@ COPY . .
 EXPOSE 10000
 
 # IMPORTANTE: Confira se o nome do arquivo antes de :app é o seu arquivo real
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "2", "--timeout", "600", "app_relatorio_performance:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "2", "--timeout", "600", "app:app"]
