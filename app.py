@@ -34,9 +34,7 @@ URL_REPORT_NNM = os.getenv("PARTNER_REPORT_URL")
 
 CONN_STR = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SERVER_NAME};DATABASE={DATABASE_NAME};UID={USERNAME};PWD={PASSWORD};TrustServerCertificate=yes"
 
-# ==============================================================================
 # 2. FUNÇÕES AUXILIARES
-# ==============================================================================
 
 def clean_decimal(valor):
     if not valor: return 0.0
@@ -64,8 +62,8 @@ def get_btg_token():
     auth = (BTG_CLIENT_ID, BTG_CLIENT_SECRET)
     
     try:
-        print("Solicitando Token BTG...")
         r = requests.post(URL_AUTH_BTG, data=payload, headers=headers, auth=auth)
+        print(f"DEBUG BTG AUTH: {r.status_code} - {r.text}") # ADICIONE ISSO
         r.raise_for_status()
         
         # O BTG retorna o token no JSON ou no Header (seu script pegava do header, mas geralmente vem no JSON)
@@ -78,9 +76,8 @@ def get_btg_token():
         print(f"[ERRO TOKEN] {e}")
         return None
 
-# ==============================================================================
 # 3. ROTA GATILHO (VOCÊ ACESSA PARA PEDIR O RELATÓRIO)
-# ==============================================================================
+
 @app.route('/trigger/nnm', methods=['GET'])
 def trigger_nnm():
     # 1. Verifica sua senha interna
