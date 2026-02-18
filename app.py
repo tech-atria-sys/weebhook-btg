@@ -49,8 +49,9 @@ def clean_bool(valor):
 
 def get_btg_token():
     """
-    Gera o token usando a lógica exata do seu script de exemplo.
+    Gera o token
     """
+    url = "https://api.btgpactual.com/iaas-auth/api/v1/authorization/oauth2/accesstoken"
     headers = {
         'x-id-partner-request': str(uuid.uuid4()),
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -58,22 +59,22 @@ def get_btg_token():
     }
     payload = {'grant_type': 'client_credentials'}
     
-    # Autenticação Basic Auth (ID e Secret)
-    auth = (BTG_CLIENT_ID, BTG_CLIENT_SECRET)
+    # Importante: Verifique se no Render o nome está exatamente "btg_client_id"
+    auth = (os.getenv("BTG_CLIENT_ID"), os.getenv("BTG_CLIENT_SECRET"))
     
     try:
-        r = requests.post(URL_AUTH_BTG, data=payload, headers=headers, auth=auth)
-        print(f"DEBUG BTG AUTH: {r.status_code} - {r.text}") # ADICIONE ISSO
-        r.raise_for_status()
+        print("Solicitando Token BTG (Via Headers)...")
+        r = requests.post(url, data=payload, headers=headers, auth=auth)
         
-        # O BTG retorna o token no JSON ou no Header (seu script pegava do header, mas geralmente vem no JSON)
-        token = r.json().get('access_token')
-        if not token:
+        if r.status_code == 200:
+            # Pega o token do CABEÇALHO, não do corpo.
             token = r.headers.get('access_token')
-            
-        return token
+            return token
+        else:
+            print(f"[ERRO AUTH] Status: {r.status_code} - {r.text}")
+            return None
     except Exception as e:
-        print(f"[ERRO TOKEN] {e}")
+        print(f"[ERRO CRÍTICO AUTH] {str(e)}")
         return None
 
 # 3. ROTA GATILHO (VOCÊ ACESSA PARA PEDIR O RELATÓRIO)
