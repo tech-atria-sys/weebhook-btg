@@ -1,150 +1,201 @@
 import os
 import io
 import csv
-import re
-import requests
-import zipfile
-import pyodbc
+import uuid
 import json
+import requests
+import pyodbc
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# --- 1. CONFIGURAÇÕES GERAIS E BANCO DE DADOS ---
-# Essas variáveis valem para TODAS as rotas
+# 1. CONFIGURAÇÕES (Preencher no Render > Environment)
+
+# Banco de Dados
 SERVER_NAME = os.getenv("SERVER_NAME")
 DATABASE_NAME = os.getenv("DATABASE_NAME")
 USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
+
+# Segurança Interna 
 WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN") 
+
+# Credenciais do BTG 
+BTG_CLIENT_ID = os.getenv("BTG_CLIENT_ID")     # btg_client_id
+BTG_CLIENT_SECRET = os.getenv("BTG_CLIENT_SECRET") # btg_client_secret
+
+# URLs
+# URL de Auth (F fixa pois é padrão do BTG)
+URL_AUTH_BTG = "https://api.btgpactual.com/iaas-auth/api/v1/authorization/oauth2/accesstoken"
+
+# URL do Relatório NNM (A que estava na doc inicial)
+# (Ou a URL exata que estiver no Swagger deles)
+URL_REPORT_NNM = os.getenv("PARTNER_REPORT_URL")
 
 CONN_STR = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SERVER_NAME};DATABASE={DATABASE_NAME};UID={USERNAME};PWD={PASSWORD};TrustServerCertificate=yes"
 
-# --- 2. FUNÇÕES AUXILIARES (Compartilhadas) ---
-def extrair_conta_do_nome(nome_arquivo):
-    """Extrai números de strings (usado no PDF)"""
-    match = re.search(r'(\d+)', nome_arquivo)
-    return match.group(1) if match else None
+# ==============================================================================
+# 2. FUNÇÕES AUXILIARES
+# ==============================================================================
 
 def clean_decimal(valor):
-    """Limpa moeda PT-BR ou EN-US para float (usado no CSV)"""
     if not valor: return 0.0
     v = str(valor).strip()
-    if '.' in v and ',' in v: v = v.replace('.', '').replace(',', '.') # 1.000,00 -> 1000.00
-    elif ',' in v: v = v.replace(',', '.') # 1000,00 -> 1000.00
+    if '.' in v and ',' in v: v = v.replace('.', '').replace(',', '.')
+    elif ',' in v: v = v.replace(',', '.')
     try: return float(v)
     except: return 0.0
 
 def clean_bool(valor):
-    """Converte 'true' texto para bit 1/0"""
     return 1 if str(valor).lower() == 'true' else 0
 
-def validar_token():
-    """Verifica se quem chamou tem a senha correta"""
-    token = request.args.get('token')
-    if token != WEBHOOK_TOKEN:
-        return False
-    return True
-
-# ==========================================
-# ROTA 1: RELATÓRIO DE PERFORMANCE (PDFs/ZIP)
-# URL: https://seu-app.onrender.com/webhook/performance
-# ==========================================
-@app.route('/webhook/performance', methods=['POST'])
-def rota_performance():
-    if not validar_token(): return jsonify({"erro": "Token Invalido"}), 403
-
-    dados = request.json
-    print(f"[PERF] Recebido: {dados}")
+def get_btg_token():
+    """
+    Gera o token usando a lógica exata do seu script de exemplo.
+    """
+    headers = {
+        'x-id-partner-request': str(uuid.uuid4()),
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+    }
+    payload = {'grant_type': 'client_credentials'}
     
-    if not dados: return jsonify({"erro": "Payload vazio"}), 400
+    # Autenticação Basic Auth (ID e Secret)
+    auth = (BTG_CLIENT_ID, BTG_CLIENT_SECRET)
+    
+    try:
+        print("Solicitando Token BTG...")
+        r = requests.post(URL_AUTH_BTG, data=payload, headers=headers, auth=auth)
+        r.raise_for_status()
+        
+        # O BTG retorna o token no JSON ou no Header (seu script pegava do header, mas geralmente vem no JSON)
+        token = r.json().get('access_token')
+        if not token:
+            token = r.headers.get('access_token')
+            
+        return token
+    except Exception as e:
+        print(f"[ERRO TOKEN] {e}")
+        return None
+
+# ==============================================================================
+# 3. ROTA GATILHO (VOCÊ ACESSA PARA PEDIR O RELATÓRIO)
+# ==============================================================================
+@app.route('/trigger/nnm', methods=['GET'])
+def trigger_nnm():
+    # 1. Verifica sua senha interna
+    if request.args.get('token') != WEBHOOK_TOKEN:
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    # 2. Pega o Token válido no BTG
+    access_token = get_btg_token()
+    if not access_token:
+        return jsonify({"erro": "Falha ao autenticar no BTG"}), 502
+
+    # 3. Monta a requisição para o Relatório NNM
+    # A Doc diz que precisa do Header 'access_token' (igual ao seu script Position)
+    headers = {
+        'x-id-partner-request': str(uuid.uuid4()),
+        'access_token': access_token, 
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+    }
 
     try:
-        # Lógica Específica dos PDFs (aquela antiga sua)
-        res = dados.get('response') or dados.get('partnerResponse') or {}
-        url_download = res.get('url')
-        if not url_download: return jsonify({"erro": "Sem URL"}), 400
+        print(f"[TRIGGER] Pedindo relatório NNM em: {URL_REPORT_NNM}")
+        # A doc inicial sugeria GET. Se der erro 405, troque para requests.post
+        r = requests.get(URL_REPORT_NNM, headers=headers)
         
-        # ... (Mantive resumido aqui, mas entra toda aquela sua lógica de ZIP e Merge)
-        # Código de download do ZIP e inserção na tabela de performance...
-        
-        return jsonify({"status": "Processado Performance"}), 200
+        # Status 202 = Aceito (Vai processar e mandar Webhook depois)
+        if r.status_code == 202:
+            return jsonify({
+                "status": "Solicitado",
+                "mensagem": "O BTG aceitou o pedido. Aguarde o Webhook.",
+                "http_code": 202
+            }), 202
+            
+        elif r.status_code == 200:
+            # Caso raro onde eles devolvem na hora
+            return jsonify({"status": "Retornado na hora (Inesperado)", "dados": r.json()}), 200
+
+        else:
+            return jsonify({"erro_btg": r.text, "status": r.status_code}), r.status_code
+
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
 
-# ==========================================
-# ROTA 2: RELATÓRIO NNM (CSV/Gerencial)
-# URL: https://seu-app.onrender.com/webhook/nnm
-# ==========================================
+# ==============================================================================
+# 4. ROTA WEBHOOK (ONDE O BTG ENTREGA O ARQUIVO)
+# ==============================================================================
 @app.route('/webhook/nnm', methods=['POST'])
-def rota_nnm():
-    if not validar_token(): return jsonify({"erro": "Token Invalido"}), 403
+def webhook_nnm():
+    # Verifica sua senha interna
+    if request.args.get('token') != WEBHOOK_TOKEN:
+        return jsonify({"erro": "Acesso negado"}), 403
 
     dados = request.json
-    print(f"[NNM] Recebido: {dados}")
-
-    if not dados: return jsonify({"erro": "Payload vazio"}), 400
+    print(f"[WEBHOOK] Payload: {dados}")
 
     try:
-        # 1. Pega URL
-        url = dados.get('response', {}).get('url')
-        if not url:
-            return jsonify({'status': 'Aguardando janela/Sem URL'}), 200
-
-        # 2. Baixa CSV
-        r = requests.get(url)
-        r.raise_for_status()
+        # Pega a URL de download do JSON
+        url_download = dados.get('response', {}).get('url') or dados.get('url')
         
-        # 3. Processa CSV
-        arquivo = io.StringIO(r.content.decode('utf-8'))
-        reader = csv.DictReader(arquivo, delimiter=';') # Confirme se é ; ou ,
+        if not url_download:
+            # Pode ser mensagem de "Aguarde janela"
+            msg = dados.get('message', 'Sem mensagem')
+            print(f"[AVISO] Sem URL de download. Msg: {msg}")
+            return jsonify({"status": "Recebido (Sem URL)"}), 200
+
+        # Baixa o CSV
+        print(f"[DOWNLOAD] Baixando de: {url_download}")
+        r = requests.get(url_download)
+        r.raise_for_status()
+
+        # Lê o CSV
+        f = io.StringIO(r.content.decode('utf-8'))
+        reader = csv.DictReader(f, delimiter=';') # Confirme se é ; ou ,
 
         conn = pyodbc.connect(CONN_STR)
         cursor = conn.cursor()
 
-        # Insere na tabela de STAGING ou na OFICIAL conforme definimos antes
         sql = """
         INSERT INTO dbo.relatorios_nnm_gerencial 
-        (nr_conta, dt_captacao, ativo, mercado, tipo_lancamento, valor_captacao, data_upload)
-        VALUES (?, ?, ?, ?, ?, ?, GETDATE())
+        (nr_conta, dt_captacao, ativo, mercado, cge_officer, tipo_lancamento, descricao, 
+         qtd, valor_captacao, is_officer_nnm, is_partner_nnm, is_channel_nnm, is_bu_nnm, 
+         submercado, submercado_detalhado, data_upload)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
         """
-        
+
+        linhas = 0
         for row in reader:
-            # Tratamento específico para este relatório
             cursor.execute(sql, (
                 row.get('nr_conta'),
                 row.get('dt_captacao'),
                 row.get('ativo'),
                 row.get('mercado'),
+                row.get('cge_officer'),
                 row.get('tipo_lancamento'),
-                clean_decimal(row.get('captacao'))
+                row.get('descricao'),
+                clean_decimal(row.get('qtd')),
+                clean_decimal(row.get('captacao') or row.get('valor_captacao')), 
+                clean_bool(row.get('is_officer_nnm')),
+                clean_bool(row.get('is_partner_nnm')),
+                clean_bool(row.get('is_channel_nnm')),
+                clean_bool(row.get('is_bu_nnm')),
+                row.get('submercado'),
+                row.get('submercado_detalhado')
             ))
-        
+            linhas += 1
+            
         conn.commit()
         conn.close()
-        return jsonify({"status": "Processado NNM"}), 200
+        print(f"[SUCESSO] {linhas} linhas importadas.")
+        return jsonify({"status": "Sucesso", "linhas": linhas}), 200
 
     except Exception as e:
-        print(f"[NNM ERRO] {e}")
+        print(f"[ERRO CRITICO] {e}")
         return jsonify({"erro": str(e)}), 500
 
-# ==========================================
-# ROTA 3: BASE BTG (Futuro)
-# URL: https://seu-app.onrender.com/webhook/basebtg
-# ==========================================
-@app.route('/webhook/basebtg', methods=['POST'])
-def rota_basebtg():
-    if not validar_token(): return jsonify({"erro": "Token Invalido"}), 403
-    
-    dados = request.json
-    print(f"[BASE BTG] Recebido: {dados}")
-    
-    # Aqui você colocará a lógica específica quando tiver a documentação dessa base
-    # Ex: baixar JSON de clientes, atualizar cadastro, etc.
-    
-    return jsonify({"status": "Recebido (Ainda não implementado)"}), 200
-
-# --- INICIALIZAÇÃO ---
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
