@@ -1,0 +1,14 @@
+name: Gatilho Diario NNM
+
+on:
+  schedule:
+    # Horário em UTC (18:00 UTC é 15:00 no Brasil)
+    - cron: '0 17 * * *'
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamando a API de Trigger
+        run: |
+          curl -X GET "https://weebhook-btg.onrender.com/trigger/nnm?token=${{ secrets.WEBHOOK_TOKEN }}"
