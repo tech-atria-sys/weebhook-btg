@@ -122,9 +122,9 @@ def trigger_nnm():
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
 
-# ==============================================================================
-# 4. ROTA WEBHOOK (ONDE O BTG ENTREGA O ARQUIVO)
-# ==============================================================================
+
+# 4. Rota webhook que o BTG chama para enviar o relatório (Eles chamam essa URL com o JSON do relatório)
+
 @app.route('/webhook/nnm', methods=['POST'])
 def webhook_nnm():
     # Verifica sua senha interna
