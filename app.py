@@ -164,18 +164,17 @@ def webhook_nnm():
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
         """
 
-        linhas = 0
         for row in reader:
             cursor.execute(sql, (
                 row.get('nr_conta'),
-                row.get('dt_captacao'),
+                row.get('data_captacao'), 
                 row.get('ativo'),
                 row.get('mercado'),
                 row.get('cge_officer'),
                 row.get('tipo_lancamento'),
                 row.get('descricao'),
-                clean_decimal(row.get('qtd')),
-                clean_decimal(row.get('captacao') or row.get('valor_captacao')), 
+                clean_decimal(row.get('quantidade')), 
+                clean_decimal(row.get('captacao')),    
                 clean_bool(row.get('is_officer_nnm')),
                 clean_bool(row.get('is_partner_nnm')),
                 clean_bool(row.get('is_channel_nnm')),
