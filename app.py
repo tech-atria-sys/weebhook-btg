@@ -156,7 +156,7 @@ def webhook_nnm():
 
         sql = """
         INSERT INTO dbo.relatorios_nnm_gerencial 
-        (nr_conta, data_captacao, ativo, mercado, cge_officer, tipo_lancamento, descricao, 
+        (nr_conta, dt_captacao, ativo, mercado, cge_officer, tipo_lancamento, descricao, 
          qtd, valor_captacao, is_officer_nnm, is_partner_nnm, is_channel_nnm, is_bu_nnm, 
          submercado, submercado_detalhado, data_upload)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
@@ -165,13 +165,13 @@ def webhook_nnm():
         for row in reader:
             cursor.execute(sql, (
                 row.get('nr_conta'),
-                row.get('data_captacao'), 
+                row.get('dt_captacao'), 
                 row.get('ativo'),
                 row.get('mercado'),
                 row.get('cge_officer'),
                 row.get('tipo_lancamento'),
                 row.get('descricao'),
-                clean_decimal(row.get('quantidade')), 
+                clean_decimal(row.get('qtd')), 
                 clean_decimal(row.get('captacao')),    
                 clean_bool(row.get('is_officer_nnm')),
                 clean_bool(row.get('is_partner_nnm')),
