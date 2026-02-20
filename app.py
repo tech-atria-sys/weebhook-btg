@@ -28,8 +28,8 @@ BTG_CLIENT_SECRET = os.getenv("BTG_CLIENT_SECRET") # btg_client_secret
 # URL de Auth (F fixa pois é padrão do BTG)
 URL_AUTH_BTG = "https://api.btgpactual.com/iaas-auth/api/v1/authorization/oauth2/accesstoken"
 
-# URL do Relatório NNM (A que estava na doc inicial)
-# (Ou a URL exata que estiver no Swagger deles)
+# URL do Relatório NNM 
+
 URL_REPORT_NNM = os.getenv("PARTNER_REPORT_URL")
 
 CONN_STR = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SERVER_NAME};DATABASE={DATABASE_NAME};UID={USERNAME};PWD={PASSWORD};TrustServerCertificate=yes"
@@ -59,7 +59,6 @@ def get_btg_token():
     }
     payload = {'grant_type': 'client_credentials'}
     
-    # Importante: Verifique se no Render o nome está exatamente "btg_client_id"
     auth = (os.getenv("BTG_CLIENT_ID"), os.getenv("BTG_CLIENT_SECRET"))
     
     try:
@@ -67,7 +66,7 @@ def get_btg_token():
         r = requests.post(url, data=payload, headers=headers, auth=auth)
         
         if r.status_code == 200:
-            # Pega o token do CABEÇALHO, não do corpo.
+            # Pega o token do header 'access_token' conforme doc do BTG
             token = r.headers.get('access_token')
             return token
         else:
@@ -91,7 +90,7 @@ def trigger_nnm():
         return jsonify({"erro": "Falha ao autenticar no BTG"}), 502
 
     # 3. Monta a requisição para o Relatório NNM
-    # A Doc diz que precisa do Header 'access_token' (igual ao seu script Position)
+    # A Doc diz que precisa do Header 'access_token' 
     headers = {
         'x-id-partner-request': str(uuid.uuid4()),
         'access_token': access_token, 
@@ -101,7 +100,6 @@ def trigger_nnm():
 
     try:
         print(f"[TRIGGER] Pedindo relatório NNM em: {URL_REPORT_NNM}")
-        # A doc inicial sugeria GET. Se der erro 405, troque para requests.post
         r = requests.get(URL_REPORT_NNM, headers=headers)
         
         # Status 202 = Aceito (Vai processar e mandar Webhook depois)
@@ -158,7 +156,7 @@ def webhook_nnm():
 
         sql = """
         INSERT INTO dbo.relatorios_nnm_gerencial 
-        (nr_conta, dt_captacao, ativo, mercado, cge_officer, tipo_lancamento, descricao, 
+        (nr_conta, data_captacao, ativo, mercado, cge_officer, tipo_lancamento, descricao, 
          qtd, valor_captacao, is_officer_nnm, is_partner_nnm, is_channel_nnm, is_bu_nnm, 
          submercado, submercado_detalhado, data_upload)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
