@@ -3,25 +3,25 @@ name: Gatilhos Relatorios BTG
 on:
   workflow_dispatch:
   schedule:
-    # Base BTG: 12:00 UTC (09:00 BR)
-    - cron: '0 12 * * *'
-    # NNM: 19:00 UTC (16:00 BR)
-    - cron: '0 19 * * *'
+    # Base BTG: 10:30 UTC (07:30 no Brasil)
+    - cron: '30 10 * * *'
+    # NNM: 18:00 UTC (15:00 no Brasil)
+    - cron: '0 18 * * *'
 
 jobs:
   disparar_relatorios:
     runs-on: ubuntu-latest
     steps:
-      # Disparo da Base BTG (Manhã)
+      # Disparo da Base BTG (Manha)
       - name: Disparando Base BTG
-        if: github.event.schedule == '0 9 * * *' || github.event_name == 'workflow_dispatch'
+        if: github.event.schedule == '30 10 * * *' || github.event_name == 'workflow_dispatch'
         run: |
           echo "Solicitando Base de Clientes..."
           curl -X GET "https://weebhook-btg.onrender.com/trigger/basebtg?token=583cc82acd14cc115a2f6b2e1cda1ee3"
 
       # Disparo do NNM (Tarde)
       - name: Disparando Relatorio NNM
-        if: github.event.schedule == '0 19 * * *' || github.event_name == 'workflow_dispatch'
+        if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'
         run: |
           echo "Solicitando NNM..."
           curl -X GET "https://weebhook-btg.onrender.com/trigger/nnm?token=583cc82acd14cc115a2f6b2e1cda1ee3"
