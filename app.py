@@ -129,7 +129,7 @@ def webhook_nnm():
             df['data_upload'] = datetime.now()
             df.to_sql("relatorios_nnm_gerencial", con=conn, schema="dbo", if_exists="append", index=False)
             
-        registrar_log('NNM', 'Sucesso', len(df), "Importação NNM concluída")
+        registrar_log('NNM', 'Sucesso', len(df), "Importação NNM concluída no schema dbo")
         return jsonify({"status": "Sucesso", "linhas": len(df)}), 200
     except Exception as e:
         registrar_log('NNM', 'Erro', 0, str(e))
@@ -195,7 +195,7 @@ def webhook_base_btg():
             
             df_hist.to_sql("pl_historico_diario", con=conn, schema="dbo", if_exists="append", index=False)
 
-        registrar_log('BASE_BTG', 'Sucesso', len(base), "Base e Histórico PL atualizados")
+        registrar_log('BASE_BTG', 'Sucesso', len(base), "Base e Histórico PL atualizados no schema dbo")
         return jsonify({"status": "Sucesso", "total": len(base)}), 200
     except Exception as e:
         registrar_log('BASE_BTG', 'Erro', 0, str(e))
