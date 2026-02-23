@@ -1,21 +1,27 @@
 name: Gatilhos Relatorios BTG
 
 on:
-  # Permite rodar manualmente clicando no botão "Run workflow" no site
   workflow_dispatch:
-  
-  # Agendamento Automático (Horários em UTC)
   schedule:
-    # Base BTG: Roda todo dia às 12:00 UTC (09:00 Brasil)
+    # Base BTG: 12:00 UTC (09:00 BR)
     - cron: '0 12 * * *'
-    # NNM: Roda todo dia às 19:00 UTC (16:00 Brasil)
+    # NNM: 19:00 UTC (16:00 BR)
     - cron: '0 19 * * *'
 
 jobs:
   disparar_relatorios:
     runs-on: ubuntu-latest
     steps:
-      - name: Disparando Relatório NNM (Tarde)
+      # Disparo da Base BTG (Manhã)
+      - name: Disparando Base BTG
+        if: github.event.schedule == '0 9 * * *' || github.event_name == 'workflow_dispatch'
+        run: |
+          echo "Solicitando Base de Clientes..."
+          curl -X GET "https://weebhook-btg.onrender.com/trigger/basebtg?token=583cc82acd14cc115a2f6b2e1cda1ee3"
+
+      # Disparo do NNM (Tarde)
+      - name: Disparando Relatorio NNM
+        if: github.event.schedule == '0 19 * * *' || github.event_name == 'workflow_dispatch'
         run: |
           echo "Solicitando NNM..."
           curl -X GET "https://weebhook-btg.onrender.com/trigger/nnm?token=583cc82acd14cc115a2f6b2e1cda1ee3"

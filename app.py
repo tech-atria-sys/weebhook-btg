@@ -5,52 +5,44 @@ import uuid
 import json
 import requests
 import pyodbc
+import pandas as pd
+import sqlalchemy
+from sqlalchemy import create_engine, text
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# 1. CONFIGURAÇÕES (Preencher no Render > Environment)
-
-# Banco de Dados
+# 1. CONFIGURAÇÕES (Via Environment Variables no Render)
 SERVER_NAME = os.getenv("SERVER_NAME")
 DATABASE_NAME = os.getenv("DATABASE_NAME")
 USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
-
-# Segurança Interna 
 WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN") 
-
-# Credenciais do BTG 
-BTG_CLIENT_ID = os.getenv("BTG_CLIENT_ID")     # btg_client_id
-BTG_CLIENT_SECRET = os.getenv("BTG_CLIENT_SECRET") # btg_client_secret
-
-# URLs
-# URL de Auth (F fixa pois é padrão do BTG)
-URL_AUTH_BTG = "https://api.btgpactual.com/iaas-auth/api/v1/authorization/oauth2/accesstoken"
-
-# URL do Relatório NNM 
-
+BTG_CLIENT_ID = os.getenv("BTG_CLIENT_ID")
+BTG_CLIENT_SECRET = os.getenv("BTG_CLIENT_SECRET")
 URL_REPORT_NNM = os.getenv("PARTNER_REPORT_URL")
+URL_REPORT_BASE = os.getenv("PARTNER_REPORT_BASE_URL")
 
+# String de Conexão
 CONN_STR = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SERVER_NAME};DATABASE={DATABASE_NAME};UID={USERNAME};PWD={PASSWORD};TrustServerCertificate=yes"
 
 # 2. FUNÇÕES AUXILIARES
 
-def clean_decimal(valor):
-    if not valor: return 0.0
-    v = str(valor).strip()
-    if '.' in v and ',' in v: v = v.replace('.', '').replace(',', '.')
-    elif ',' in v: v = v.replace(',', '.')
-    try: return float(v)
-    except: return 0.0
-
-def clean_bool(valor):
-    return 1 if str(valor).lower() == 'true' else 0
+def registrar_log(atividade, status, linhas=0, mensagem=""):
+    """Grava o resultado da operação na tabela dbo.logs_atividades"""
+    try:
+        engine = create_engine(f"mssql+pyodbc:///?odbc_connect={CONN_STR}")
+        with engine.begin() as conn:
+            sql = text("""
+                INSERT INTO dbo.logs_atividades (atividade, status, linhas_processadas, mensagem_detalhe)
+                VALUES (:atv, :st, :ln, :msg)
+            """)
+            conn.execute(sql, {"atv": atividade, "st": status, "ln": linhas, "msg": str(mensagem)[:500]})
+    except Exception as e:
+        print(f"Falha ao gravar log no banco: {e}")
 
 def get_btg_token():
-    """
-    Gera o token
-    """
     url = "https://api.btgpactual.com/iaas-auth/api/v1/authorization/oauth2/accesstoken"
     headers = {
         'x-id-partner-request': str(uuid.uuid4()),
@@ -58,135 +50,155 @@ def get_btg_token():
         'Accept': 'application/json'
     }
     payload = {'grant_type': 'client_credentials'}
-    
-    auth = (os.getenv("BTG_CLIENT_ID"), os.getenv("BTG_CLIENT_SECRET"))
+    auth = (BTG_CLIENT_ID, BTG_CLIENT_SECRET)
     
     try:
-        print("Solicitando Token BTG (Via Headers)...")
         r = requests.post(url, data=payload, headers=headers, auth=auth)
-        
         if r.status_code == 200:
-            # Pega o token do header 'access_token' conforme doc do BTG
-            token = r.headers.get('access_token')
-            return token
-        else:
-            print(f"[ERRO AUTH] Status: {r.status_code} - {r.text}")
-            return None
+            return r.headers.get('access_token')
+        return None
     except Exception as e:
-        print(f"[ERRO CRÍTICO AUTH] {str(e)}")
+        print(f"[ERRO AUTH] {str(e)}")
         return None
 
-# 3. ROTA GATILHO (VOCÊ ACESSA PARA PEDIR O RELATÓRIO)
+# 3. ROTAS DE GATILHO (Chamadas pelo GitHub Actions)
 
 @app.route('/trigger/nnm', methods=['GET'])
 def trigger_nnm():
-    # 1. Verifica sua senha interna
     if request.args.get('token') != WEBHOOK_TOKEN:
         return jsonify({"erro": "Acesso negado"}), 403
 
-    # 2. Pega o Token válido no BTG
     access_token = get_btg_token()
     if not access_token:
+        registrar_log('TRIGGER_NNM', 'Erro', 0, "Falha na geração do token BTG")
         return jsonify({"erro": "Falha ao autenticar no BTG"}), 502
 
-    # 3. Monta a requisição para o Relatório NNM
-    # A Doc diz que precisa do Header 'access_token' 
-    headers = {
-        'x-id-partner-request': str(uuid.uuid4()),
-        'access_token': access_token, 
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-    }
+    headers = {'x-id-partner-request': str(uuid.uuid4()), 'access_token': access_token, 'Content-Type': 'application/json'}
 
     try:
-        print(f"[TRIGGER] Pedindo relatório NNM em: {URL_REPORT_NNM}")
         r = requests.get(URL_REPORT_NNM, headers=headers)
-        
-        # Status 202 = Aceito (Vai processar e mandar Webhook depois)
         if r.status_code == 202:
-            return jsonify({
-                "status": "Solicitado",
-                "mensagem": "O BTG aceitou o pedido. Aguarde o Webhook.",
-                "http_code": 202
-            }), 202
-            
-        elif r.status_code == 200:
-            # Caso raro onde eles devolvem na hora
-            return jsonify({"status": "Retornado na hora (Inesperado)", "dados": r.json()}), 200
-
-        else:
-            return jsonify({"erro_btg": r.text, "status": r.status_code}), r.status_code
-
+            registrar_log('TRIGGER_NNM', 'Sucesso', 0, "Solicitação aceita pelo BTG")
+            return jsonify({"status": "Solicitado", "http_code": 202}), 202
+        return jsonify({"erro_btg": r.text}), r.status_code
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
 
+@app.route('/trigger/basebtg', methods=['GET'])
+def trigger_basebtg():
+    if request.args.get('token') != WEBHOOK_TOKEN:
+        return jsonify({"erro": "Acesso negado"}), 403
 
-# 4. Rota webhook que o BTG chama para enviar o relatório (Eles chamam essa URL com o JSON do relatório)
+    access_token = get_btg_token()
+    if not access_token:
+        registrar_log('TRIGGER_BASE', 'Erro', 0, "Falha na geração do token BTG")
+        return jsonify({"erro": "Falha ao autenticar no BTG"}), 502
+
+    headers = {'x-id-partner-request': str(uuid.uuid4()), 'access_token': access_token, 'Content-Type': 'application/json'}
+
+    try:
+        r = requests.get(URL_REPORT_BASE, headers=headers)
+        if r.status_code == 202:
+            registrar_log('TRIGGER_BASE', 'Sucesso', 0, "Solicitação de Base aceita pelo BTG")
+            return jsonify({"status": "Solicitado", "http_code": 202}), 202
+        return jsonify({"erro_btg": r.text}), r.status_code
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+# 4. ROTAS DE WEBHOOK (Recebem os dados do BTG)
 
 @app.route('/webhook/nnm', methods=['POST'])
 def webhook_nnm():
-    # Verifica sua senha interna
     if request.args.get('token') != WEBHOOK_TOKEN:
         return jsonify({"erro": "Acesso negado"}), 403
 
     dados = request.json
-    print(f"[WEBHOOK] Payload: {dados}")
-
     try:
         url_download = dados.get('response', {}).get('url') or dados.get('url')
-        
         if not url_download:
-            msg = dados.get('message', 'Sem mensagem')
-            print(f"[AVISO] Sem URL de download. Msg: {msg}")
-            return jsonify({"status": "Recebido (Sem URL)"}), 200
+            registrar_log('NNM', 'Aviso', 0, "Webhook recebido sem URL")
+            return jsonify({"status": "Recebido sem URL"}), 200
 
-        print(f"[DOWNLOAD] Baixando de: {url_download}")
         r = requests.get(url_download)
         r.raise_for_status()
-
-        f = io.StringIO(r.content.decode('utf-8'))
-        reader = csv.DictReader(f, delimiter=';')
-
-        conn = pyodbc.connect(CONN_STR)
-        cursor = conn.cursor()
-
-        # COLUNA CORRIGIDA: data_captacao
-        sql = """
-        INSERT INTO dbo.relatorios_nnm_gerencial 
-        (nr_conta, data_captacao, ativo, mercado, cge_officer, tipo_lancamento, descricao, 
-         qtd, valor_captacao, is_officer_nnm, is_partner_nnm, is_channel_nnm, is_bu_nnm, 
-         submercado, submercado_detalhado, data_upload)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
-        """
-
-        linhas = 0 # Inicialização necessária
-        for row in reader:
-            cursor.execute(sql, (
-                row.get('nr_conta'),
-                row.get('dt_captacao'), 
-                row.get('ativo'),
-                row.get('mercado'),
-                row.get('cge_officer'),
-                row.get('tipo_lancamento'),
-                row.get('descricao'),
-                clean_decimal(row.get('qtd')), 
-                clean_decimal(row.get('captacao')),    
-                clean_bool(row.get('is_officer_nnm')),
-                clean_bool(row.get('is_partner_nnm')),
-                clean_bool(row.get('is_channel_nnm')),
-                clean_bool(row.get('is_bu_nnm')),
-                row.get('submercado'),
-                row.get('submercado_detalhado')
-            ))
-            linhas += 1
+        
+        df = pd.read_csv(io.StringIO(r.content.decode('utf-8')), sep=';')
+        
+        engine = create_engine(f"mssql+pyodbc:///?odbc_connect={CONN_STR}")
+        with engine.begin() as conn:
+            df['data_upload'] = datetime.now()
+            df.to_sql("relatorios_nnm_gerencial", con=conn, schema="dbo", if_exists="append", index=False)
             
-        conn.commit()
-        conn.close()
-        print(f"[SUCESSO] {linhas} linhas importadas.")
-        return jsonify({"status": "Sucesso", "linhas": linhas}), 200
-
+        registrar_log('NNM', 'Sucesso', len(df), "Importação NNM concluída")
+        return jsonify({"status": "Sucesso", "linhas": len(df)}), 200
     except Exception as e:
-        print(f"[ERRO CRITICO] {e}")
+        registrar_log('NNM', 'Erro', 0, str(e))
+        return jsonify({"erro": str(e)}), 500
+
+@app.route('/webhook/basebtg', methods=['POST'])
+def webhook_base_btg():
+    if request.args.get('token') != WEBHOOK_TOKEN:
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    try:
+        dados = request.json
+        url_download = dados.get('response', {}).get('url') or dados.get('url')
+        if not url_download: return jsonify({"erro": "URL não encontrada"}), 400
+
+        r = requests.get(url_download)
+        r.raise_for_status()
+        base = pd.read_csv(io.BytesIO(r.content))
+
+        # Tratamentos
+        base.rename(columns={
+            "nm_assessor": "Assessor", "nr_conta": "Conta", "pl_total": "PL Total",
+            "nome_completo": "Nome", "faixa_cliente": "Faixa Cliente"
+        }, inplace=True)
+        
+        base['Conta'] = base['Conta'].astype(str)
+        base['Assessor'] = base['Assessor'].str.upper()
+
+        faixas_ate_300 = ["Ate 50K", "Entre 50k e 100k", "Entre 100k e 300k"]
+        base.loc[base['Faixa Cliente'].isin(faixas_ate_300), "Faixa Cliente"] = "Até 300k"
+
+        engine = create_engine(f"mssql+pyodbc:///?odbc_connect={CONN_STR}")
+        
+        with engine.connect() as conn:
+            try:
+                offshore = pd.read_sql('SELECT * FROM dbo.pl_offshore', conn)
+                offshore['Conta'] = offshore['Conta'].astype(str)
+            except:
+                offshore = pd.DataFrame()
+
+        base = pd.concat([offshore, base], axis=0, ignore_index=True)
+        
+        # Ajustes de Assessores
+        base.loc[base['Assessor'] == "MURILO LUIZ SILVA GINO", "Assessor"] = "IZADORA VILLELA FREITAS"
+        base.loc[base['Assessor'].str.contains("GABRIEL GUERRERO TORRES FONSECA", na=False), "Assessor"] = "MARCOS SOARES PEREIRA FILHO"
+        
+        nomes_rodrigo = ["RODRIGO DE MELLO D?ELIA", "RODRIGO DE MELLO DELIA", "RODRIGO DE MELLO DELIA"]
+        base.loc[base['Assessor'].isin(nomes_rodrigo), "Assessor"] = "RODRIGO DE MELLO D’ELIA"
+
+        base.drop_duplicates(subset="Conta", keep='first', inplace=True)
+
+        with engine.begin() as conn:
+            base.to_sql("base_btg", con=conn, schema="dbo", if_exists="replace", index=False,
+                         dtype={"Conta": sqlalchemy.types.VARCHAR(255)})
+            
+            df_hist = pd.DataFrame()
+            df_hist['Conta'] = base['Conta']
+            df_hist['Assessor'] = base['Assessor']
+            df_hist['PL Total'] = base['PL Total']
+            hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            df_hist['Data'] = hoje
+            df_hist['Mês'] = hoje.strftime("%Y-%m")
+            
+            df_hist.to_sql("pl_historico_diario", con=conn, schema="dbo", if_exists="append", index=False)
+
+        registrar_log('BASE_BTG', 'Sucesso', len(base), "Base e Histórico PL atualizados")
+        return jsonify({"status": "Sucesso", "total": len(base)}), 200
+    except Exception as e:
+        registrar_log('BASE_BTG', 'Erro', 0, str(e))
         return jsonify({"erro": str(e)}), 500
 
 if __name__ == '__main__':
