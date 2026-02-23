@@ -133,35 +133,33 @@ def webhook_nnm():
     print(f"[WEBHOOK] Payload: {dados}")
 
     try:
-        # Pega a URL de download do JSON
         url_download = dados.get('response', {}).get('url') or dados.get('url')
         
         if not url_download:
-            # Pode ser mensagem de "Aguarde janela"
             msg = dados.get('message', 'Sem mensagem')
             print(f"[AVISO] Sem URL de download. Msg: {msg}")
             return jsonify({"status": "Recebido (Sem URL)"}), 200
 
-        # Baixa o CSV
         print(f"[DOWNLOAD] Baixando de: {url_download}")
         r = requests.get(url_download)
         r.raise_for_status()
 
-        # Lê o CSV
         f = io.StringIO(r.content.decode('utf-8'))
-        reader = csv.DictReader(f, delimiter=';') # Confirme se é ; ou ,
+        reader = csv.DictReader(f, delimiter=';')
 
         conn = pyodbc.connect(CONN_STR)
         cursor = conn.cursor()
 
+        # COLUNA CORRIGIDA: data_captacao
         sql = """
         INSERT INTO dbo.relatorios_nnm_gerencial 
-        (nr_conta, dt_captacao, ativo, mercado, cge_officer, tipo_lancamento, descricao, 
+        (nr_conta, data_captacao, ativo, mercado, cge_officer, tipo_lancamento, descricao, 
          qtd, valor_captacao, is_officer_nnm, is_partner_nnm, is_channel_nnm, is_bu_nnm, 
          submercado, submercado_detalhado, data_upload)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
         """
 
+        linhas = 0 # Inicialização necessária
         for row in reader:
             cursor.execute(sql, (
                 row.get('nr_conta'),
