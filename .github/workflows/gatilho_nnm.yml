@@ -1,0 +1,15 @@
+name: Gatilho Relatorio NNM
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 18 * * *'
+
+jobs:
+  disparar_nnm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Disparando Relatorio NNM
+        run: |
+          echo "Solicitando NNM..."
+          curl -X GET "https://weebhook-btg.onrender.com/trigger/nnm?token=583cc82acd14cc115a2f6b2e1cda1ee3"
