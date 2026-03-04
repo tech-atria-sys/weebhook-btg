@@ -1,8 +1,10 @@
 import os
 import io
+import re
 import uuid
 import math
 import requests
+import zipfile
 import pyodbc
 import pandas as pd
 import sqlalchemy
@@ -21,7 +23,7 @@ WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN")
 BTG_CLIENT_ID = os.getenv("BTG_CLIENT_ID")
 BTG_CLIENT_SECRET = os.getenv("BTG_CLIENT_SECRET")
 
-# Atualizado com os novos nomes definidos no Render
+# URLs dos relatorios
 URL_REPORT_NNM = os.getenv("PARTNER_REPORT_URL_NNM")
 URL_REPORT_BASE = os.getenv("PARTNER_REPORT_URL_BASEBTG")
 
@@ -90,6 +92,10 @@ def get_btg_token():
         return None
     except Exception as e:
         return None
+
+def extrair_conta_do_nome(nome_arquivo):
+    match = re.search(r'(\d+)', nome_arquivo)
+    return match.group(1) if match else None
 
 # 3. ROTAS DE GATILHO
 
@@ -242,6 +248,82 @@ def webhook_base_btg():
     except Exception as e:
         registrar_log('BASE_BTG', 'Erro', 0, str(e))
         return jsonify({"erro": str(e)}), 500
+
+@app.route('/webhook/performance', methods=['POST'])
+def webhook_performance():
+    token_recebido = request.args.get('token')
+    if token_recebido != WEBHOOK_TOKEN:
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    dados = request.json
+    if not dados:
+        return jsonify({"erro": "Payload vazio"}), 400
+
+    try:
+        # Extração Robusta
+        res = dados.get('response') or dados.get('partnerResponse') or {}
+        url_download = res.get('url') if isinstance(res, dict) else None
+        data_ref = res.get('endDate') if isinstance(res, dict) else None
+        req_id = dados.get('idPartnerRequest', 'N/A')
+        
+        # Busca Identificador da Conta
+        conta_raw = res.get('accountNumber') or dados.get('cge') or dados.get('accountNumber')
+        conta_id = str(conta_raw) if (conta_raw and str(conta_raw).lower() != 'null') else "Desconhecida"
+
+        # Caso 1: Sem URL (Relatório não gerado pelo BTG)
+        if not url_download:
+            registrar_log('PERFORMANCE', 'Aviso', 0, f"URL nao encontrada. Conta: {conta_id} | ID: {req_id}")
+            return jsonify({"erro": "URL nao encontrada", "conta": conta_id}), 400
+
+        # Caso 2: Processamento com Sucesso
+        r = requests.get(url_download, stream=True)
+        r.raise_for_status()
+
+        arquivos_salvos = 0
+        conn = pyodbc.connect(CONN_STR)
+        cursor = conn.cursor()
+        
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            for nome_arquivo in z.namelist():
+                if nome_arquivo.lower().endswith('.pdf'):
+                    conta_final = conta_id if conta_id != "Desconhecida" else extrair_conta_do_nome(nome_arquivo)
+                    pdf_bytes = z.read(nome_arquivo)
+                    
+                    sql_merge = """
+                    MERGE dbo.relatorios_performance_atual AS Target
+                    USING (SELECT ? AS ContaVal) AS Source
+                    ON (Target.conta = Source.ContaVal)
+                    WHEN MATCHED THEN
+                        UPDATE SET arquivo_pdf = ?, nome_arquivo = ?, data_referencia = ?, data_upload = GETDATE()
+                    WHEN NOT MATCHED THEN
+                        INSERT (conta, arquivo_pdf, nome_arquivo, data_referencia, data_upload)
+                        VALUES (?, ?, ?, ?, GETDATE());
+                    """
+                    cursor.execute(sql_merge, (conta_final, pdf_bytes, nome_arquivo, data_ref, conta_final, pdf_bytes, nome_arquivo, data_ref))
+                    arquivos_salvos += 1
+
+        conn.commit()
+        conn.close()
+        
+        # Log de Sucesso
+        msg_sucesso = f"Conta: {conta_id} | Salvos: {arquivos_salvos} | Ref: {data_ref}"
+        registrar_log('PERFORMANCE', 'Sucesso', arquivos_salvos, msg_sucesso)
+        
+        return jsonify({"status": "Processado", "conta": conta_id}), 200
+
+    except Exception as e:
+        conta_falha = conta_id if 'conta_id' in locals() else 'N/A'
+        registrar_log('PERFORMANCE', 'Erro', 0, f"Conta: {conta_falha} | Erro: {str(e)[:100]}")
+        return jsonify({"erro": str(e)}), 500
+
+# 5. UTILITARIOS
+
+@app.route('/meu-ip', methods=['GET'])
+def get_ip():
+    try:
+        return jsonify({'ip_render': requests.get('https://api.ipify.org').text})
+    except:
+        return jsonify({'erro': 'falha ao obter ip'}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
