@@ -380,14 +380,16 @@ def webhook_custodia():
         r = requests.get(url_download)
         r.raise_for_status()
         
-        # Converte o arquivo para texto
-        raw_text = r.content.decode('latin1')
-        
-        # Força o print ir para a tela imediatamente no Render
-        print(f"[DEBUG CUSTODIA] Cabecalho: {raw_text.splitlines()[0][:150]}", flush=True)
-        
-        # Tentativa de leitura
-        df = pd.read_csv(io.StringIO(raw_text), sep='\t', low_memory=False)
+        # 1. Abre o arquivo ZIP baixado em memoria
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            # 2. Pega o nome do arquivo CSV que esta la dentro
+            nome_arquivo_csv = z.namelist()[0]
+            print(f"[DEBUG CUSTODIA] Lendo arquivo descompactado: {nome_arquivo_csv}", flush=True)
+            
+            # 3. Abre o CSV interno e passa para o Pandas ler
+            with z.open(nome_arquivo_csv) as f:
+                df = pd.read_csv(f, sep=';', encoding='latin1', low_memory=False)
 
         # Backup Raw
         df_raw = df.copy()
@@ -411,19 +413,9 @@ def webhook_custodia():
         return jsonify({"status": "Sucesso", "linhas": len(df_final)}), 200
 
     except Exception as e:
-        # Pega as primeiras 2 linhas do arquivo real para colocar no log de erro
-        amostra_texto = ""
-        if 'raw_text' in locals():
-            linhas = raw_text.splitlines()[:2]
-            amostra_texto = " --- ".join(linhas)
-
-        msg_erro = f"Falha: {str(e)} | Amostra: {amostra_texto}"
-        
-        print(f"[ERRO CRITICO CUSTODIA] {msg_erro}", flush=True) 
+        print(f"[ERRO CRITICO CUSTODIA] Falha: {str(e)}", flush=True) 
         registrar_log('CUSTODIA', 'Erro', 0, str(e))
-        
-        # Retorna o erro e a amostra do texto para o JSON do BTG
-        return jsonify({"erro": msg_erro}), 500
+        return jsonify({"erro": str(e)}), 500
 
 
 # 5. UTILITARIOS
