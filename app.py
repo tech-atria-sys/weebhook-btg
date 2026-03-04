@@ -382,7 +382,7 @@ def webhook_custodia():
         
         # Leitura direta do CSV padrão. 
         # Nota: Se o BTG mandar com ponto e vírgula, basta alterar para sep=';'
-        df = pd.read_csv(io.BytesIO(r.content), sep=',', encoding='latin1', low_memory=False)
+        df = pd.read_csv(io.BytesIO(r.content), sep=';', encoding='latin1', low_memory=False)
 
         # Backup Raw
         df_raw = df.copy()
