@@ -389,7 +389,7 @@ def webhook_custodia():
             
             # 3. Abre o CSV interno e passa para o Pandas ler
             with z.open(nome_arquivo_csv) as f:
-                df = pd.read_csv(f, sep=';', encoding='latin1', low_memory=False)
+                df = pd.read_csv(f, sep=',', encoding='latin1', low_memory=False)
 
         # Backup Raw
         df_raw = df.copy()
