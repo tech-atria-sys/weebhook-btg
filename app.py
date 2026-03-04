@@ -380,9 +380,14 @@ def webhook_custodia():
         r = requests.get(url_download)
         r.raise_for_status()
         
-        # Leitura direta do CSV padrão. 
-        # Nota: Se o BTG mandar com ponto e vírgula, basta alterar para sep=';'
-        df = pd.read_csv(io.BytesIO(r.content), sep=';', encoding='latin1', low_memory=False)
+        # Converte o arquivo para texto com a codificacao correta
+        raw_text = r.content.decode('latin1')
+        
+        # Imprime a primeira linha no log do Render para auditoria visual
+        print(f"[DEBUG CUSTODIA] Cabecalho real: {raw_text.splitlines()[0][:150]}")
+        
+        # Le o dataframe utilizando a tabulacao (\t) como separador
+        df = pd.read_csv(io.StringIO(raw_text), sep='\t', low_memory=False)
 
         # Backup Raw
         df_raw = df.copy()
