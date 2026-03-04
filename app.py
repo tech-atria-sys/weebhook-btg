@@ -160,25 +160,36 @@ def trigger_custodia():
 
 @app.route('/webhook/nnm', methods=['POST'])
 def webhook_nnm():
-    if request.args.get('token') != WEBHOOK_TOKEN: return jsonify({"erro": "Acesso negado"}), 403
+    if request.args.get('token') != WEBHOOK_TOKEN: 
+        return jsonify({"erro": "Acesso negado"}), 403
 
     dados = request.json
     try:
         url_download = dados.get('response', {}).get('url') or dados.get('url')
-        if not url_download: return jsonify({"status": "Recebido sem URL"}), 200
+        if not url_download: 
+            return jsonify({"status": "Recebido sem URL"}), 200
 
         r = requests.get(url_download)
         r.raise_for_status()
         
         df = pd.read_csv(io.StringIO(r.content.decode('utf-8')), sep=';')
         
-        # Backup Raw
+        # 1. Backup Raw (Salva os 20 dias intactos para segurança)
         df_raw = df.copy()
         df_raw['data_recebimento_webhook'] = datetime.now()
         salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
         
-        # Tratamento: renomeia apenas a data, mantem captacao com o nome original
+        # 2. Tratamento e Definição da Janela Móvel
         df.rename(columns={'dt_captacao': 'data_captacao'}, inplace=True)
+        df['data_captacao'] = pd.to_datetime(df['data_captacao'], errors='coerce')
+        
+        # Configuração da Janela: Substituir apenas os últimos N dias
+        from datetime import timedelta
+        DIAS_JANELA = 5
+        data_corte = (datetime.today() - timedelta(days=DIAS_JANELA)).replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Filtra o DataFrame para manter apenas o período da janela
+        df = df[df['data_captacao'] >= data_corte]
         
         colunas_tabela = [
             'nr_conta', 'data_captacao', 'ativo', 'mercado', 'cge_officer', 
@@ -190,17 +201,29 @@ def webhook_nnm():
         colunas_presentes = [c for c in colunas_tabela if c in df.columns]
         df_final = df[colunas_presentes].copy()
         
-        # Converte os booleanos do BTG ('t'/'f') para inteiros (1/0)
+        # Converte booleanos
         colunas_booleanas = ['is_officer_nnm', 'is_partner_nnm', 'is_channel_nnm', 'is_bu_nnm']
         for col in colunas_booleanas:
             if col in df_final.columns:
                 df_final[col] = df_final[col].map({'t': 1, 'f': 0, 'True': 1, 'False': 0}).fillna(0).astype(int)
 
         df_final['data_upload'] = datetime.now()
+        
+        # 3. Limpeza Cirúrgica no Banco de Dados
+        data_str = data_corte.strftime('%Y-%m-%d')
+        engine = create_engine(f"mssql+pyodbc:///?odbc_connect={CONN_STR}")
+        with engine.begin() as conn:
+            try:
+                conn.execute(text(f"DELETE FROM dbo.relatorios_nnm_gerencial WHERE data_captacao >= '{data_str}'"))
+                print(f"[NNM] Limpeza efetuada: registros a partir de {data_str} apagados.")
+            except Exception as del_err:
+                print(f"Aviso: Falha ao deletar janela movel: {del_err}")
+        
+        # 4. Salva apenas os dados filtrados
         salvar_df_otimizado(df_final, "relatorios_nnm_gerencial", if_exists="append")
             
-        print(f"[SUCESSO NNM] Importacao concluida. Linhas: {len(df_final)}")
-        registrar_log('NNM', 'Sucesso', len(df_final), "Importacao NNM concluida")
+        print(f"[SUCESSO NNM] Importacao concluida. Janela de {DIAS_JANELA} dias. Linhas inseridas: {len(df_final)}")
+        registrar_log('NNM', 'Sucesso', len(df_final), f"Importacao NNM concluida (Janela {DIAS_JANELA} dias)")
         return jsonify({"status": "Sucesso", "linhas": len(df_final)}), 200
 
     except Exception as e:
@@ -364,7 +387,7 @@ def webhook_custodia():
         # Backup Raw
         df_raw = df.copy()
         df_raw['data_recebimento_webhook'] = datetime.now()
-        salvar_df_otimizado(df_raw, "backup_custodia_raw", if_exists="append")
+        salvar_df_otimizado(df_raw, "backup_custodia_raw", if_exists="replace")
         
         # Tratamento: Conversão das colunas de data (DD/MM/YYYY) para formato datetime
         df_final = df.copy()
