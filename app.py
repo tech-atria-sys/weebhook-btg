@@ -380,13 +380,13 @@ def webhook_custodia():
         r = requests.get(url_download)
         r.raise_for_status()
         
-        # Converte o arquivo para texto com a codificacao correta
+        # Converte o arquivo para texto
         raw_text = r.content.decode('latin1')
         
-        # Imprime a primeira linha no log do Render para auditoria visual
-        print(f"[DEBUG CUSTODIA] Cabecalho real: {raw_text.splitlines()[0][:150]}")
+        # Força o print ir para a tela imediatamente no Render
+        print(f"[DEBUG CUSTODIA] Cabecalho: {raw_text.splitlines()[0][:150]}", flush=True)
         
-        # Le o dataframe utilizando a tabulacao (\t) como separador
+        # Tentativa de leitura
         df = pd.read_csv(io.StringIO(raw_text), sep='\t', low_memory=False)
 
         # Backup Raw
@@ -394,10 +394,9 @@ def webhook_custodia():
         df_raw['data_recebimento_webhook'] = datetime.now()
         salvar_df_otimizado(df_raw, "backup_custodia_raw", if_exists="replace")
         
-        # Tratamento: Conversão das colunas de data (DD/MM/YYYY) para formato datetime
+        # Tratamento das datas
         df_final = df.copy()
         colunas_de_data = ['referenceDate', 'dataInicio', 'fixingDate', 'dataKnockIn']
-        
         for col in colunas_de_data:
             if col in df_final.columns:
                 df_final[col] = pd.to_datetime(df_final[col], format='%d/%m/%Y', errors='coerce')
@@ -406,15 +405,25 @@ def webhook_custodia():
         df_final['data_upload'] = datetime.now()
         salvar_df_otimizado(df_final, "relatorios_custodia", if_exists="replace")
             
-        print(f"[SUCESSO CUSTODIA] Importacao concluida. Linhas: {len(df_final)}")
+        print(f"[SUCESSO CUSTODIA] Importacao concluida. Linhas: {len(df_final)}", flush=True)
         registrar_log('CUSTODIA', 'Sucesso', len(df_final), "Importacao Custodia concluida")
         
         return jsonify({"status": "Sucesso", "linhas": len(df_final)}), 200
 
     except Exception as e:
-        print(f"[ERRO CRITICO CUSTODIA] Falha no processamento: {str(e)}") 
+        # Pega as primeiras 2 linhas do arquivo real para colocar no log de erro
+        amostra_texto = ""
+        if 'raw_text' in locals():
+            linhas = raw_text.splitlines()[:2]
+            amostra_texto = " --- ".join(linhas)
+
+        msg_erro = f"Falha: {str(e)} | Amostra: {amostra_texto}"
+        
+        print(f"[ERRO CRITICO CUSTODIA] {msg_erro}", flush=True) 
         registrar_log('CUSTODIA', 'Erro', 0, str(e))
-        return jsonify({"erro": str(e)}), 500
+        
+        # Retorna o erro e a amostra do texto para o JSON do BTG
+        return jsonify({"erro": msg_erro}), 500
 
 
 # 5. UTILITARIOS
