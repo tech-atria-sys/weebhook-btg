@@ -14,7 +14,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# 1. CONFIGURACOES (Via Environment Variables no Render)
+# 1. CONFIGURACOES (Via Environment Variables no Render)""
 SERVER_NAME = os.getenv("SERVER_NAME")
 DATABASE_NAME = os.getenv("DATABASE_NAME")
 USERNAME = os.getenv("USERNAME")
@@ -158,23 +158,32 @@ def webhook_nnm():
         
         # Tratamento e filtro de colunas para relatorios_nnm_gerencial
         df.rename(columns={
-            'dt_captacao': 'data_captacao',
-            'captacao': 'valor_captacao'
+            'dt_captacao': 'data_captacao'
+            # Garantir que 'captacao' nao seja renomeado para 'valor_captacao'
         }, inplace=True)
         
         colunas_tabela = [
             'nr_conta', 'data_captacao', 'ativo', 'mercado', 'cge_officer', 
-            'tipo_lancamento', 'descricao', 'qtd', 'valor_captacao', 
+            'tipo_lancamento', 'descricao', 'qtd', 'captacao', 
             'is_officer_nnm', 'is_partner_nnm', 'is_channel_nnm', 'is_bu_nnm', 
             'submercado', 'submercado_detalhado'
         ]
         
         colunas_presentes = [c for c in colunas_tabela if c in df.columns]
         df_final = df[colunas_presentes].copy()
+        
+        # Correção do Erro de Conversão BIT (Transformar 't'/'f' em 1/0)
+        colunas_booleanas = ['is_officer_nnm', 'is_partner_nnm', 'is_channel_nnm', 'is_bu_nnm']
+        for col in colunas_booleanas:
+            if col in df_final.columns:
+                # Transforma 't' em 1, 'f' em 0. Se vier nulo, mantém 0.
+                df_final[col] = df_final[col].map({'t': 1, 'f': 0, 'True': 1, 'False': 0}).fillna(0).astype(int)
+
         df_final['data_upload'] = datetime.now()
         
         salvar_df_otimizado(df_final, "relatorios_nnm_gerencial", if_exists="append")
             
+        print(f"[SUCESSO NNM] Importacao concluida. Linhas: {len(df_final)}")
         registrar_log('NNM', 'Sucesso', len(df_final), "Importacao NNM concluida")
         return jsonify({"status": "Sucesso", "linhas": len(df_final)}), 200
 
@@ -242,6 +251,7 @@ def webhook_base_btg():
         
         salvar_df_otimizado(df_hist, "pl_historico_diario", if_exists="append")
 
+        print(f"[SUCESSO BASE_BTG] Base e Historico atualizados. Total: {len(base)}")
         registrar_log('BASE_BTG', 'Sucesso', len(base), "Base e Historico atualizados")
         return jsonify({"status": "Sucesso", "total": len(base)}), 200
 
@@ -305,9 +315,8 @@ def webhook_performance():
         conn.commit()
         conn.close()
         
-        # Log de Sucesso
-        msg_sucesso = f"Conta: {conta_id} | Salvos: {arquivos_salvos} | Ref: {data_ref}"
-        registrar_log('PERFORMANCE', 'Sucesso', arquivos_salvos, msg_sucesso)
+        # Log de Sucesso exclusivo no console do Render em uma linha
+        print(f"[SUCESSO PERFORMANCE] Conta: {conta_id} | Salvos: {arquivos_salvos} | Ref: {data_ref} | ID: {req_id}")
         
         return jsonify({"status": "Processado", "conta": conta_id}), 200
 
