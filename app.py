@@ -155,6 +155,80 @@ def trigger_custodia():
         return jsonify({"erro_btg": r.text}), r.status_code
     except Exception as e: return jsonify({"erro": str(e)}), 500
 
+@app.route('/trigger/carteiras-recomendadas', methods=['GET'])
+def trigger_carteiras_recomendadas():
+    # 1. Valida o token da sua API
+    if request.args.get('token') != WEBHOOK_TOKEN: 
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    # 2. Obtem o token do BTG
+    access_token = get_btg_token()
+    if not access_token:
+        registrar_log('CARTEIRAS_RECOM', 'Erro', 0, "Falha na geracao do token BTG")
+        return jsonify({"erro": "Falha ao autenticar no BTG"}), 502
+
+    headers = {
+        'x-id-partner-request': str(uuid.uuid4()), 
+        'access_token': access_token, 
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        # 3. Faz a chamada GET para o BTG
+        r = requests.get(PARTNER_REPORT_URL_RECOMMENDED_EQUITIES, headers=headers)
+        
+        if r.status_code == 200:
+            dados = r.json()
+            
+            if not dados:
+                return jsonify({"status": "Sucesso", "mensagem": "Nenhuma carteira retornada"}), 200
+
+            # 4. Achatar o JSON para um formato tabular (DataFrame)
+            linhas_tabela = []
+            for carteira in dados:
+                carteira_base = {
+                    "tipo_carteira": carteira.get("typeInitial"),
+                    "nome_carteira": carteira.get("name"),
+                    "inicio_validade": carteira.get("validityStart"),
+                    "fim_validade": carteira.get("validityEnd"),
+                    "rentabilidade_acumulada": carteira.get("accumulatedProfitability"),
+                    "data_extracao": datetime.now()
+                }
+                
+                ativos = carteira.get("assets", [])
+                for item in ativos:
+                    linha = carteira_base.copy()
+                    ativo_info = item.get("asset", {})
+                    setor_info = ativo_info.get("sector", {})
+                    
+                    linha["ticker"] = ativo_info.get("ticker")
+                    linha["empresa"] = ativo_info.get("company")
+                    linha["setor"] = setor_info.get("name")
+                    linha["peso"] = item.get("weight")
+                    
+                    linhas_tabela.append(linha)
+            
+            df_carteiras = pd.DataFrame(linhas_tabela)
+            
+            # 5. Converter colunas de data para o formato correto
+            df_carteiras['inicio_validade'] = pd.to_datetime(df_carteiras['inicio_validade'], errors='coerce')
+            df_carteiras['fim_validade'] = pd.to_datetime(df_carteiras['fim_validade'], errors='coerce')
+
+            # 6. Salvar no banco
+            # Utilizando replace para que a tabela sempre reflita as recomendacoes ativas no momento
+            salvar_df_otimizado(df_carteiras, "carteiras_recomendadas_btg", if_exists="replace")
+            
+            registrar_log('CARTEIRAS_RECOM', 'Sucesso', len(df_carteiras), "Carteiras recomendadas importadas com sucesso")
+            return jsonify({"status": "Sucesso", "linhas_salvas": len(df_carteiras)}), 200
+            
+        else:
+            erro_msg = f"Erro BTG: {r.status_code} - {r.text}"
+            registrar_log('CARTEIRAS_RECOM', 'Erro', 0, erro_msg)
+            return jsonify({"erro": erro_msg}), r.status_code
+            
+    except Exception as e:
+        registrar_log('CARTEIRAS_RECOM', 'Erro', 0, str(e))
+        return jsonify({"erro": str(e)}), 500
 
 # 4. ROTAS DE WEBHOOK
 
