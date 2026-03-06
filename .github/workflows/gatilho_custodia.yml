@@ -1,0 +1,14 @@
+name: Gatilho Relatorio Custodia
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 09 * * *'
+
+jobs:
+  disparar_base_btg:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Disparando Relatório de Custodia - Produtos Estruturados
+        run: |
+          echo "Solicitando Base de Clientes..."
+          curl -X GET "https://weebhook-btg.onrender.com/trigger/custodia?token=583cc82acd14cc115a2f6b2e1cda1ee3"
