@@ -157,9 +157,11 @@ def trigger_custodia():
 
 @app.route('/trigger/carteiras-recomendadas', methods=['GET'])
 def trigger_carteiras_recomendadas():
+    # 1. Valida o token da sua API
     if request.args.get('token') != WEBHOOK_TOKEN: 
         return jsonify({"erro": "Acesso negado"}), 403
 
+    # 2. Obtem o token do BTG
     access_token = get_btg_token()
     if not access_token:
         registrar_log('CARTEIRAS_RECOM', 'Erro', 0, "Falha na geracao do token BTG")
@@ -172,8 +174,9 @@ def trigger_carteiras_recomendadas():
     }
     
     try:
-        # Faz a chamada GET para o BTG usando a nova URL fixa
-        r = requests.get(URL_CARTEIRAS_RECOMENDADAS, headers=headers)
+        # URL declarada diretamente dentro da funcao para evitar erros de escopo
+        url_api_btg = "https://api.btgpactual.com/iaas-recommended-equities/api/v1/recommended-equities-allocation"
+        r = requests.get(url_api_btg, headers=headers)
         
         if r.status_code == 200:
             dados = r.json()
@@ -184,7 +187,6 @@ def trigger_carteiras_recomendadas():
             # Achatar o JSON para um formato tabular (DataFrame)
             linhas_tabela = []
             for carteira in dados:
-                # Captura os dados do cabecalho da carteira conforme o dicionario
                 carteira_base = {
                     "tipo_carteira": carteira.get("typeInitial"),
                     "descricao": carteira.get("description"),
@@ -200,7 +202,6 @@ def trigger_carteiras_recomendadas():
                 ativos = carteira.get("assets", [])
                 
                 if ativos:
-                    # Se houver ativos, cruza o cabecalho com cada ativo
                     for item in ativos:
                         linha = carteira_base.copy()
                         ativo_info = item.get("asset", {})
@@ -213,7 +214,6 @@ def trigger_carteiras_recomendadas():
                         
                         linhas_tabela.append(linha)
                 else:
-                    # Se a carteira vier sem ativos (apenas cabecalho), salva a linha vazia
                     linhas_tabela.append(carteira_base)
             
             df_carteiras = pd.DataFrame(linhas_tabela)
@@ -222,7 +222,6 @@ def trigger_carteiras_recomendadas():
             df_carteiras['inicio_validade'] = pd.to_datetime(df_carteiras['inicio_validade'], errors='coerce')
             df_carteiras['fim_validade'] = pd.to_datetime(df_carteiras['fim_validade'], errors='coerce')
 
-            # Salvar no banco (replace mantem a tabela espelhando apenas as carteiras vigentes)
             salvar_df_otimizado(df_carteiras, "carteiras_recomendadas_btg", if_exists="replace")
             
             registrar_log('CARTEIRAS_RECOM', 'Sucesso', len(df_carteiras), "Carteiras recomendadas importadas com sucesso")
