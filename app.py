@@ -174,22 +174,40 @@ def webhook_nnm():
         
         df = pd.read_csv(io.StringIO(r.content.decode('utf-8')), sep=';')
         
-        # 1. Backup Raw (Salva os 20 dias intactos para segurança)
-        df_raw = df.copy()
-        df_raw['data_recebimento_webhook'] = datetime.now()
-        salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
-        
-        # 2. Tratamento e Definição da Janela Móvel
+        # 1. Padronizacao inicial da data
         df.rename(columns={'dt_captacao': 'data_captacao'}, inplace=True)
         df['data_captacao'] = pd.to_datetime(df['data_captacao'], errors='coerce')
         
-        # Configuração da Janela: Substituir apenas os últimos N dias
+        # 2. Definicao das Janelas Moveis
         from datetime import timedelta
-        DIAS_JANELA = 5
-        data_corte = (datetime.today() - timedelta(days=DIAS_JANELA)).replace(hour=0, minute=0, second=0, microsecond=0)
+        DIAS_FATO = 3
+        DIAS_BACKUP = 20
         
-        # Filtra o DataFrame para manter apenas o período da janela
-        df = df[df['data_captacao'] >= data_corte]
+        hoje = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
+        data_corte_fato = hoje - timedelta(days=DIAS_FATO)
+        data_corte_backup = hoje - timedelta(days=DIAS_BACKUP)
+        
+        str_corte_fato = data_corte_fato.strftime('%Y-%m-%d')
+        str_corte_backup = data_corte_backup.strftime('%Y-%m-%d')
+
+        engine = create_engine(f"mssql+pyodbc:///?odbc_connect={CONN_STR}")
+
+        # --- 3. TRATAMENTO DO BACKUP RAW (20 DIAS) ---
+        df_raw = df[df['data_captacao'] >= data_corte_backup].copy()
+        df_raw['data_recebimento_webhook'] = datetime.now()
+        
+        with engine.begin() as conn:
+            try:
+                # Remove os ultimos 20 dias para nao duplicar com a carga de hoje
+                conn.execute(text(f"DELETE FROM dbo.backup_nnm_raw WHERE data_captacao >= '{str_corte_backup}'"))
+            except Exception as e:
+                print(f"Aviso Backup NNM: Falha ao deletar (pode ser a primeira execucao). Erro: {e}")
+        
+        salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
+
+
+        # Filtra a base original apenas para a janela curta do painel (3 dias)
+        df_fato = df[df['data_captacao'] >= data_corte_fato].copy()
         
         colunas_tabela = [
             'nr_conta', 'data_captacao', 'ativo', 'mercado', 'cge_officer', 
@@ -198,8 +216,8 @@ def webhook_nnm():
             'submercado', 'submercado_detalhado'
         ]
         
-        colunas_presentes = [c for c in colunas_tabela if c in df.columns]
-        df_final = df[colunas_presentes].copy()
+        colunas_presentes = [c for c in colunas_tabela if c in df_fato.columns]
+        df_final = df_fato[colunas_presentes].copy()
         
         # Converte booleanos
         colunas_booleanas = ['is_officer_nnm', 'is_partner_nnm', 'is_channel_nnm', 'is_bu_nnm']
@@ -209,22 +227,20 @@ def webhook_nnm():
 
         df_final['data_upload'] = datetime.now()
         
-        # 3. Limpeza Cirúrgica no Banco de Dados
-        data_str = data_corte.strftime('%Y-%m-%d')
-        engine = create_engine(f"mssql+pyodbc:///?odbc_connect={CONN_STR}")
         with engine.begin() as conn:
             try:
-                conn.execute(text(f"DELETE FROM dbo.relatorios_nnm_gerencial WHERE data_captacao >= '{data_str}'"))
-                print(f"[NNM] Limpeza efetuada: registros a partir de {data_str} apagados.")
-            except Exception as del_err:
-                print(f"Aviso: Falha ao deletar janela movel: {del_err}")
+                # Remove os ultimos 3 dias da tabela gerencial exposta
+                conn.execute(text(f"DELETE FROM dbo.relatorios_nnm_gerencial WHERE data_captacao >= '{str_corte_fato}'"))
+            except Exception as e:
+                pass
         
-        # 4. Salva apenas os dados filtrados
         salvar_df_otimizado(df_final, "relatorios_nnm_gerencial", if_exists="append")
             
-        print(f"[SUCESSO NNM] Importacao concluida. Janela de {DIAS_JANELA} dias. Linhas inseridas: {len(df_final)}")
-        registrar_log('NNM', 'Sucesso', len(df_final), f"Importacao NNM concluida (Janela {DIAS_JANELA} dias)")
-        return jsonify({"status": "Sucesso", "linhas": len(df_final)}), 200
+        msg_sucesso = f"Fato: {DIAS_FATO} dias ({len(df_final)} linhas) | Backup: {DIAS_BACKUP} dias ({len(df_raw)} linhas)"
+        print(f"[SUCESSO NNM] {msg_sucesso}")
+        registrar_log('NNM', 'Sucesso', len(df_final), f"Importacao concluida. {msg_sucesso}")
+        
+        return jsonify({"status": "Sucesso", "linhas_fato": len(df_final), "linhas_backup": len(df_raw)}), 200
 
     except Exception as e:
         print(f"[ERRO CRITICO NNM] Falha no processamento: {str(e)}") 
