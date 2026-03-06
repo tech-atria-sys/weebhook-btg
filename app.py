@@ -157,11 +157,9 @@ def trigger_custodia():
 
 @app.route('/trigger/carteiras-recomendadas', methods=['GET'])
 def trigger_carteiras_recomendadas():
-    # 1. Valida o token da sua API
     if request.args.get('token') != WEBHOOK_TOKEN: 
         return jsonify({"erro": "Acesso negado"}), 403
 
-    # 2. Obtem o token do BTG
     access_token = get_btg_token()
     if not access_token:
         registrar_log('CARTEIRAS_RECOM', 'Erro', 0, "Falha na geracao do token BTG")
@@ -174,8 +172,8 @@ def trigger_carteiras_recomendadas():
     }
     
     try:
-        # 3. Faz a chamada GET para o BTG
-        r = requests.get(PARTNER_REPORT_URL_RECOMMENDED_EQUITIES, headers=headers)
+        # Faz a chamada GET para o BTG usando a nova URL fixa
+        r = requests.get(URL_CARTEIRAS_RECOMENDADAS, headers=headers)
         
         if r.status_code == 200:
             dados = r.json()
@@ -183,39 +181,48 @@ def trigger_carteiras_recomendadas():
             if not dados:
                 return jsonify({"status": "Sucesso", "mensagem": "Nenhuma carteira retornada"}), 200
 
-            # 4. Achatar o JSON para um formato tabular (DataFrame)
+            # Achatar o JSON para um formato tabular (DataFrame)
             linhas_tabela = []
             for carteira in dados:
+                # Captura os dados do cabecalho da carteira conforme o dicionario
                 carteira_base = {
                     "tipo_carteira": carteira.get("typeInitial"),
+                    "descricao": carteira.get("description"),
                     "nome_carteira": carteira.get("name"),
+                    "link_pdf": carteira.get("fileName"),
+                    "rentabilidade_anterior": carteira.get("previousProfitability"),
+                    "rentabilidade_acumulada": carteira.get("accumulatedProfitability"),
                     "inicio_validade": carteira.get("validityStart"),
                     "fim_validade": carteira.get("validityEnd"),
-                    "rentabilidade_acumulada": carteira.get("accumulatedProfitability"),
                     "data_extracao": datetime.now()
                 }
                 
                 ativos = carteira.get("assets", [])
-                for item in ativos:
-                    linha = carteira_base.copy()
-                    ativo_info = item.get("asset", {})
-                    setor_info = ativo_info.get("sector", {})
-                    
-                    linha["ticker"] = ativo_info.get("ticker")
-                    linha["empresa"] = ativo_info.get("company")
-                    linha["setor"] = setor_info.get("name")
-                    linha["peso"] = item.get("weight")
-                    
-                    linhas_tabela.append(linha)
+                
+                if ativos:
+                    # Se houver ativos, cruza o cabecalho com cada ativo
+                    for item in ativos:
+                        linha = carteira_base.copy()
+                        ativo_info = item.get("asset", {})
+                        setor_info = ativo_info.get("sector", {})
+                        
+                        linha["ticker"] = ativo_info.get("ticker")
+                        linha["empresa"] = ativo_info.get("company")
+                        linha["setor"] = setor_info.get("name")
+                        linha["peso"] = item.get("weight")
+                        
+                        linhas_tabela.append(linha)
+                else:
+                    # Se a carteira vier sem ativos (apenas cabecalho), salva a linha vazia
+                    linhas_tabela.append(carteira_base)
             
             df_carteiras = pd.DataFrame(linhas_tabela)
             
-            # 5. Converter colunas de data para o formato correto
+            # Converter colunas de data para o formato correto
             df_carteiras['inicio_validade'] = pd.to_datetime(df_carteiras['inicio_validade'], errors='coerce')
             df_carteiras['fim_validade'] = pd.to_datetime(df_carteiras['fim_validade'], errors='coerce')
 
-            # 6. Salvar no banco
-            # Utilizando replace para que a tabela sempre reflita as recomendacoes ativas no momento
+            # Salvar no banco (replace mantem a tabela espelhando apenas as carteiras vigentes)
             salvar_df_otimizado(df_carteiras, "carteiras_recomendadas_btg", if_exists="replace")
             
             registrar_log('CARTEIRAS_RECOM', 'Sucesso', len(df_carteiras), "Carteiras recomendadas importadas com sucesso")
