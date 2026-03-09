@@ -37,8 +37,8 @@ jobs:
         env:
           SERVER_NAME:    ${{ secrets.SERVER_NAME }}
           DATABASE_NAME:  ${{ secrets.DATABASE_NAME }}
-          DB_USERNAME:    ${{ secrets.USERNAME }}
-          DB_PASSWORD:    ${{ secrets.PASSWORD }}
+          USERNAME:    ${{ secrets.USERNAME }}
+          PASSWORD:    ${{ secrets.PASSWORD }}
         run: python scripts_de_atualizacao_AZURE/previa_receita.py
 
       - name: Notificar falha
