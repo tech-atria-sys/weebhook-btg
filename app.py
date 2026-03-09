@@ -7,6 +7,7 @@ import zipfile
 import requests
 import pyodbc
 import pandas as pd
+from typing import Optional
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from flask import Flask, request, jsonify
@@ -39,8 +40,8 @@ CONN_STR = (
 # Janela curta da tabela de fatos (dias relativos ao max do CSV)
 DIAS_FATO_NNM = 3
 
-# 2. FUNÇÕES AUXILIARES
 
+# 2. FUNÇÕES AUXILIARES
 
 def get_engine():
     """Cria engine SQLAlchemy. Centralizado para facilitar manutenção."""
@@ -114,7 +115,7 @@ def salvar_df_otimizado(
                 print(f"[AVISO] PK em {nome_tabela}: {e}")
 
 
-def get_btg_token() -> str | None:
+def get_btg_token() -> Optional[str]:
     """Obtém access token OAuth2 do BTG."""
     url = (
         "https://api.btgpactual.com/iaas-auth/api/v1/"
@@ -147,7 +148,7 @@ def btg_headers() -> dict:
     }
 
 
-def extrair_conta_do_nome(nome_arquivo: str) -> str | None:
+def extrair_conta_do_nome(nome_arquivo: str) -> Optional[str]:
     match = re.search(r"(\d+)", nome_arquivo)
     return match.group(1) if match else None
 
@@ -171,8 +172,8 @@ def parse_datas_csv(df: pd.DataFrame, coluna: str):
 
     return data_min, data_max
 
-# 3. ROTAS DE GATILHO (disparam geração de relatório no BTG)
 
+# 3. ROTAS DE GATILHO (disparam geração de relatório no BTG)
 
 def _trigger_generico(url_relatorio: str, nome_log: str):
     """Lógica comum a todos os triggers de relatório BTG."""
@@ -292,7 +293,6 @@ def trigger_carteiras_recomendadas():
 
 # 4. WEBHOOKS (recebem o arquivo gerado pelo BTG e persistem no banco)
 
-
 @app.route("/webhook/nnm", methods=["POST"])
 def webhook_nnm():
     if not validar_token(request):
@@ -310,7 +310,7 @@ def webhook_nnm():
         df = pd.read_csv(io.StringIO(r.content.decode("utf-8")), sep=";")
         df.rename(columns={"dt_captacao": "data_captacao"}, inplace=True)
 
-        # --- Âncoras data-driven ---
+        # --- Âncoras data-driven (não dependem do relógio do servidor) ---
         # data_captacao é mantida como DATE no banco; formatação fica no BI
         data_min_csv, data_max_csv = parse_datas_csv(df, "data_captacao")
         data_corte_fato = data_max_csv - timedelta(days=DIAS_FATO_NNM)
@@ -326,6 +326,7 @@ def webhook_nnm():
 
         engine = get_engine()
 
+
         # CAMADA RAW — janela completa do CSV
         # Substitui apenas o intervalo que chegou; edições fora desse
         # intervalo (períodos antigos corrigidos manualmente) ficam intactas.
@@ -340,6 +341,7 @@ def webhook_nnm():
             """), {"data_min": str_min_csv, "data_max": str_max_csv})
 
         salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
+
 
         # CAMADA DE FATOS — janela curta ancorada no max do CSV
         # Preserva correções manuais em datas anteriores ao corte.
@@ -413,42 +415,24 @@ def webhook_base_btg():
 
         base = pd.read_csv(io.BytesIO(r.content), sep=";", encoding="utf-8")
 
-        # Debug: loga as colunas reais que chegaram para facilitar diagnóstico
-        print(f"[DEBUG BASE_BTG] Colunas recebidas: {base.columns.tolist()}", flush=True)
-
-        # Backup raw antes de qualquer transformação
+        # Backup raw
         df_raw = base.copy()
         df_raw["data_recebimento_webhook"] = datetime.now()
         salvar_df_otimizado(df_raw, "backup_base_btg_raw", if_exists="append")
 
-        # Renomeia apenas o que existir — evita KeyError silencioso
-        renomear = {
+        # Renomeações e normalizações
+        base.rename(columns={
             "nm_assessor":   "Assessor",
             "nr_conta":      "Conta",
             "pl_total":      "PL Total",
             "nome_completo": "Nome",
             "faixa_cliente": "Faixa Cliente"
-        }
-        colunas_presentes = {k: v for k, v in renomear.items() if k in base.columns}
-        colunas_ausentes  = [k for k in renomear if k not in base.columns]
+        }, inplace=True)
 
-        if colunas_ausentes:
-            print(f"[AVISO BASE_BTG] Colunas esperadas não encontradas: {colunas_ausentes}", flush=True)
-
-        base.rename(columns=colunas_presentes, inplace=True)
-
-        # Valida se as colunas críticas existem após o rename
-        colunas_criticas = ["Assessor", "Conta", "PL Total"]
-        faltando = [c for c in colunas_criticas if c not in base.columns]
-        if faltando:
-            msg = f"Colunas críticas ausentes após rename: {faltando}"
-            registrar_log("BASE_BTG", "Erro", 0, msg)
-            return jsonify({"erro": msg}), 400
-
-        # Transformações
         base["Conta"]    = base["Conta"].astype(str)
         base["Assessor"] = base["Assessor"].str.upper()
 
+        # Agrupa faixas pequenas
         faixas_ate_300 = ["Ate 50K", "Entre 50k e 100k", "Entre 100k e 300k"]
         base.loc[base["Faixa Cliente"].isin(faixas_ate_300), "Faixa Cliente"] = "Ate 300k"
 
@@ -459,10 +443,10 @@ def webhook_base_btg():
                 offshore = pd.read_sql("SELECT * FROM dbo.pl_offshore", conn)
             offshore["Conta"] = offshore["Conta"].astype(str)
             base = pd.concat([offshore, base], axis=0, ignore_index=True)
-        except Exception as e:
-            print(f"[AVISO BASE_BTG] Offshore não carregado: {e}", flush=True)
+        except Exception:
+            pass  # Tabela offshore ainda não existe — segue sem ela
 
-        # Correções de assessores
+        # Correções de nomes de assessores
         base.loc[base["Assessor"] == "MURILO LUIZ SILVA GINO", "Assessor"] = "IZADORA VILLELA FREITAS"
         nomes_rodrigo = ["RODRIGO DE MELLO D?ELIA", "RODRIGO DE MELLO DELIA"]
         base.loc[base["Assessor"].isin(nomes_rodrigo), "Assessor"] = "RODRIGO DE MELLO D'ELIA"
@@ -471,7 +455,7 @@ def webhook_base_btg():
 
         salvar_df_otimizado(base, "base_btg", col_pk="Conta", if_exists="replace")
 
-        # Histórico diário
+        # Histórico diário de PL
         hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         df_hist = base[["Conta", "Assessor", "PL Total"]].copy()
         df_hist["Data"] = hoje
