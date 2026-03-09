@@ -1,13 +1,15 @@
 import os
 import io
 import re
+import hmac
 import uuid
 import math
 import zipfile
 import requests
 import pyodbc
 import pandas as pd
-from typing import Optional
+from typing import Optional, Tuple
+from urllib.parse import urlparse, quote_plus
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from flask import Flask, request, jsonify
@@ -16,32 +18,43 @@ app = Flask(__name__)
 
 # 1. CONFIGURAÇÕES
 
-SERVER_NAME     = os.getenv("SERVER_NAME")
-DATABASE_NAME   = os.getenv("DATABASE_NAME")
-USERNAME        = os.getenv("USERNAME")
-PASSWORD        = os.getenv("PASSWORD")
-WEBHOOK_TOKEN   = os.getenv("WEBHOOK_TOKEN")
-BTG_CLIENT_ID   = os.getenv("BTG_CLIENT_ID")
+SERVER_NAME       = os.getenv("SERVER_NAME")
+DATABASE_NAME     = os.getenv("DATABASE_NAME")
+USERNAME          = os.getenv("USERNAME")
+PASSWORD          = os.getenv("PASSWORD")
+WEBHOOK_TOKEN     = os.getenv("WEBHOOK_TOKEN")
+BTG_CLIENT_ID     = os.getenv("BTG_CLIENT_ID")
 BTG_CLIENT_SECRET = os.getenv("BTG_CLIENT_SECRET")
 
 URL_REPORT_NNM      = os.getenv("PARTNER_REPORT_URL_NNM")
 URL_REPORT_BASE     = os.getenv("PARTNER_REPORT_URL_BASEBTG")
 URL_REPORT_CUSTODIA = os.getenv("PARTNER_REPORT_URL_CUSTODIA")
 
-CONN_STR = (
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-    f"SERVER={SERVER_NAME};"
-    f"DATABASE={DATABASE_NAME};"
-    f"UID={USERNAME};"
-    f"PWD={PASSWORD};"
-    f"TrustServerCertificate=yes"
-)
+# Domínios autorizados para download de arquivos (proteção SSRF)
+DOMINIOS_PERMITIDOS = {
+    "invest-reports.s3.amazonaws.com",
+    "api.btgpactual.com",
+    "api.ipify.org"
+}
+
+# Tamanho máximo de payload aceito nos webhooks (50 MB)
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 # Janela curta da tabela de fatos (dias relativos ao max do CSV)
 DIAS_FATO_NNM = 3
 
+# CONN_STR com valores quoted para evitar quebra por caracteres especiais
+CONN_STR = (
+    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+    f"SERVER={SERVER_NAME};"
+    f"DATABASE={DATABASE_NAME};"
+    f"UID={quote_plus(USERNAME or '')};"
+    f"PWD={quote_plus(PASSWORD or '')};"
+    f"TrustServerCertificate=yes"
+)
 
 # 2. FUNÇÕES AUXILIARES
+
 
 def get_engine():
     """Cria engine SQLAlchemy. Centralizado para facilitar manutenção."""
@@ -74,7 +87,7 @@ def registrar_log(atividade: str, status: str, linhas: int = 0, mensagem: str = 
 def salvar_df_otimizado(
     df: pd.DataFrame,
     nome_tabela: str,
-    col_pk: str = None,
+    col_pk: Optional[str] = None,
     if_exists: str = "append",
     schema: str = "dbo"
 ):
@@ -85,8 +98,8 @@ def salvar_df_otimizado(
     if df.empty:
         return
 
-    num_colunas = len(df.columns)
-    limit_params = math.floor(2090 / num_colunas) if num_colunas > 0 else 1000
+    num_colunas    = len(df.columns)
+    limit_params   = math.floor(2090 / num_colunas) if num_colunas > 0 else 1000
     safe_chunksize = max(1, min(limit_params, 1000))
 
     engine = get_engine()
@@ -139,25 +152,41 @@ def get_btg_token() -> Optional[str]:
         return None
 
 
-def btg_headers() -> dict:
-    """Monta headers padrão para chamadas à API BTG."""
-    return {
-        "x-id-partner-request": str(uuid.uuid4()),
-        "access_token": get_btg_token() or "",
-        "Content-Type": "application/json"
-    }
-
-
 def extrair_conta_do_nome(nome_arquivo: str) -> Optional[str]:
     match = re.search(r"(\d+)", nome_arquivo)
     return match.group(1) if match else None
 
 
 def validar_token(req) -> bool:
-    return req.args.get("token") == WEBHOOK_TOKEN
+    """
+    Comparação segura contra timing attacks via hmac.compare_digest.
+    Retorna False se WEBHOOK_TOKEN não estiver configurado.
+    """
+    token_recebido = req.args.get("token", "")
+    token_esperado = WEBHOOK_TOKEN or ""
+    if not token_esperado:
+        return False
+    return hmac.compare_digest(token_recebido, token_esperado)
 
 
-def parse_datas_csv(df: pd.DataFrame, coluna: str):
+def validar_url_download(url: str) -> bool:
+    """
+    Previne SSRF validando que a URL pertence a um domínio autorizado
+    e usa HTTPS. Bloqueia IPs internos, metadata endpoints e domínios
+    não listados em DOMINIOS_PERMITIDOS.
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme != "https":
+            return False
+        if parsed.netloc not in DOMINIOS_PERMITIDOS:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def parse_datas_csv(df: pd.DataFrame, coluna: str) -> Tuple[datetime, datetime]:
     """
     Retorna (data_min, data_max) como datetime.
     Lança ValueError se as datas vierem nulas (CSV malformado).
@@ -173,7 +202,18 @@ def parse_datas_csv(df: pd.DataFrame, coluna: str):
     return data_min, data_max
 
 
+def erro_interno(atividade: str, e: Exception, conta: str = "") -> tuple:
+    """
+    Loga o erro completo internamente mas retorna mensagem genérica
+    para o cliente, evitando vazamento de detalhes da infraestrutura.
+    """
+    detalhe = f"Conta: {conta} | {str(e)}" if conta else str(e)
+    print(f"[ERRO CRÍTICO {atividade}] {detalhe}")
+    registrar_log(atividade, "Erro", 0, detalhe)
+    return jsonify({"erro": "Erro interno — consulte os logs"}), 500
+
 # 3. ROTAS DE GATILHO (disparam geração de relatório no BTG)
+
 
 def _trigger_generico(url_relatorio: str, nome_log: str):
     """Lógica comum a todos os triggers de relatório BTG."""
@@ -194,7 +234,7 @@ def _trigger_generico(url_relatorio: str, nome_log: str):
             return jsonify({"status": "Solicitado", "http_code": 202}), 202
         return jsonify({"erro_btg": r.text}), r.status_code
     except Exception as e:
-        return jsonify({"erro": str(e)}), 500
+        return erro_interno(nome_log, e)
 
 
 @app.route("/trigger/nnm", methods=["GET"])
@@ -242,8 +282,8 @@ def trigger_carteiras_recomendadas():
         r = requests.get(url, headers=headers)
 
         if r.status_code != 200:
-            erro_msg = f"Erro BTG: {r.status_code} - {r.text}"
-            registrar_log("CARTEIRAS_RECOM", "Erro", 0, erro_msg)
+            erro_msg = f"Erro BTG: {r.status_code}"
+            registrar_log("CARTEIRAS_RECOM", "Erro", 0, f"{erro_msg} - {r.text}")
             return jsonify({"erro": erro_msg}), r.status_code
 
         dados = r.json()
@@ -253,22 +293,22 @@ def trigger_carteiras_recomendadas():
         linhas = []
         for carteira in dados:
             base = {
-                "tipo_carteira":            carteira.get("typeInitial"),
-                "descricao":                carteira.get("description"),
-                "nome_carteira":            carteira.get("name"),
-                "link_pdf":                 carteira.get("fileName"),
-                "rentabilidade_anterior":   carteira.get("previousProfitability"),
-                "rentabilidade_acumulada":  carteira.get("accumulatedProfitability"),
-                "inicio_validade":          pd.to_datetime(carteira.get("validityStart"), errors="coerce"),
-                "fim_validade":             pd.to_datetime(carteira.get("validityEnd"),   errors="coerce"),
-                "data_extracao":            datetime.now()
+                "tipo_carteira":           carteira.get("typeInitial"),
+                "descricao":               carteira.get("description"),
+                "nome_carteira":           carteira.get("name"),
+                "link_pdf":                carteira.get("fileName"),
+                "rentabilidade_anterior":  carteira.get("previousProfitability"),
+                "rentabilidade_acumulada": carteira.get("accumulatedProfitability"),
+                "inicio_validade":         pd.to_datetime(carteira.get("validityStart"), errors="coerce"),
+                "fim_validade":            pd.to_datetime(carteira.get("validityEnd"),   errors="coerce"),
+                "data_extracao":           datetime.now()
             }
             ativos = carteira.get("assets", [])
             if ativos:
                 for item in ativos:
-                    ativo  = item.get("asset", {})
-                    setor  = ativo.get("sector", {})
-                    linha  = base.copy()
+                    ativo = item.get("asset", {})
+                    setor = ativo.get("sector", {})
+                    linha = base.copy()
                     linha.update({
                         "ticker":  ativo.get("ticker"),
                         "empresa": ativo.get("company"),
@@ -287,11 +327,10 @@ def trigger_carteiras_recomendadas():
         return jsonify({"status": "Sucesso", "linhas_salvas": len(df_carteiras)}), 200
 
     except Exception as e:
-        registrar_log("CARTEIRAS_RECOM", "Erro", 0, str(e))
-        return jsonify({"erro": str(e)}), 500
-
+        return erro_interno("CARTEIRAS_RECOM", e)
 
 # 4. WEBHOOKS (recebem o arquivo gerado pelo BTG e persistem no banco)
+
 
 @app.route("/webhook/nnm", methods=["POST"])
 def webhook_nnm():
@@ -304,14 +343,17 @@ def webhook_nnm():
         if not url_download:
             return jsonify({"status": "Recebido sem URL"}), 200
 
+        if not validar_url_download(url_download):
+            registrar_log("NNM", "Erro", 0, f"URL bloqueada por política SSRF: {url_download}")
+            return jsonify({"erro": "URL não autorizada"}), 400
+
         r = requests.get(url_download)
         r.raise_for_status()
 
         df = pd.read_csv(io.StringIO(r.content.decode("utf-8")), sep=";")
         df.rename(columns={"dt_captacao": "data_captacao"}, inplace=True)
 
-        # --- Âncoras data-driven (não dependem do relógio do servidor) ---
-        # data_captacao é mantida como DATE no banco; formatação fica no BI
+        # Âncoras data-driven — não dependem do relógio do servidor
         data_min_csv, data_max_csv = parse_datas_csv(df, "data_captacao")
         data_corte_fato = data_max_csv - timedelta(days=DIAS_FATO_NNM)
 
@@ -325,7 +367,6 @@ def webhook_nnm():
         )
 
         engine = get_engine()
-
 
         # CAMADA RAW — janela completa do CSV
         # Substitui apenas o intervalo que chegou; edições fora desse
@@ -342,7 +383,6 @@ def webhook_nnm():
 
         salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
 
-
         # CAMADA DE FATOS — janela curta ancorada no max do CSV
         # Preserva correções manuais em datas anteriores ao corte.
 
@@ -355,7 +395,6 @@ def webhook_nnm():
         df_fato = df[df["data_captacao"] > data_corte_fato].copy()
         df_fato = df_fato[[c for c in colunas_tabela if c in df_fato.columns]].copy()
 
-        # Booleanos: converte t/f do Postgres para 1/0
         for col in ["is_officer_nnm", "is_partner_nnm", "is_channel_nnm", "is_bu_nnm"]:
             if col in df_fato.columns:
                 df_fato[col] = (
@@ -394,9 +433,7 @@ def webhook_nnm():
         return jsonify({"erro": str(e)}), 400
 
     except Exception as e:
-        print(f"[ERRO CRÍTICO NNM] {e}")
-        registrar_log("NNM", "Erro", 0, str(e))
-        return jsonify({"erro": str(e)}), 500
+        return erro_interno("NNM", e)
 
 
 @app.route("/webhook/basebtg", methods=["POST"])
@@ -410,29 +447,50 @@ def webhook_base_btg():
         if not url_download:
             return jsonify({"erro": "URL não encontrada"}), 400
 
+        if not validar_url_download(url_download):
+            registrar_log("BASE_BTG", "Erro", 0, f"URL bloqueada por política SSRF: {url_download}")
+            return jsonify({"erro": "URL não autorizada"}), 400
+
         r = requests.get(url_download)
         r.raise_for_status()
 
         base = pd.read_csv(io.BytesIO(r.content), sep=";", encoding="utf-8")
 
-        # Backup raw
+        # Debug: loga colunas reais para facilitar diagnóstico
+        print(f"[DEBUG BASE_BTG] Colunas recebidas: {base.columns.tolist()}", flush=True)
+
+        # Backup raw antes de qualquer transformação
         df_raw = base.copy()
         df_raw["data_recebimento_webhook"] = datetime.now()
         salvar_df_otimizado(df_raw, "backup_base_btg_raw", if_exists="append")
 
-        # Renomeações e normalizações
-        base.rename(columns={
+        # Rename defensivo — só aplica colunas que existirem no CSV
+        renomear = {
             "nm_assessor":   "Assessor",
             "nr_conta":      "Conta",
             "pl_total":      "PL Total",
             "nome_completo": "Nome",
             "faixa_cliente": "Faixa Cliente"
-        }, inplace=True)
+        }
+        colunas_presentes = {k: v for k, v in renomear.items() if k in base.columns}
+        colunas_ausentes  = [k for k in renomear if k not in base.columns]
+
+        if colunas_ausentes:
+            print(f"[AVISO BASE_BTG] Colunas esperadas não encontradas: {colunas_ausentes}", flush=True)
+
+        base.rename(columns=colunas_presentes, inplace=True)
+
+        # Valida colunas críticas após rename
+        colunas_criticas = ["Assessor", "Conta", "PL Total"]
+        faltando = [c for c in colunas_criticas if c not in base.columns]
+        if faltando:
+            msg = f"Colunas críticas ausentes após rename: {faltando}"
+            registrar_log("BASE_BTG", "Erro", 0, msg)
+            return jsonify({"erro": msg}), 400
 
         base["Conta"]    = base["Conta"].astype(str)
         base["Assessor"] = base["Assessor"].str.upper()
 
-        # Agrupa faixas pequenas
         faixas_ate_300 = ["Ate 50K", "Entre 50k e 100k", "Entre 100k e 300k"]
         base.loc[base["Faixa Cliente"].isin(faixas_ate_300), "Faixa Cliente"] = "Ate 300k"
 
@@ -443,10 +501,10 @@ def webhook_base_btg():
                 offshore = pd.read_sql("SELECT * FROM dbo.pl_offshore", conn)
             offshore["Conta"] = offshore["Conta"].astype(str)
             base = pd.concat([offshore, base], axis=0, ignore_index=True)
-        except Exception:
-            pass  # Tabela offshore ainda não existe — segue sem ela
+        except Exception as e:
+            print(f"[AVISO BASE_BTG] Offshore não carregado: {e}", flush=True)
 
-        # Correções de nomes de assessores
+        # Correções de assessores
         base.loc[base["Assessor"] == "MURILO LUIZ SILVA GINO", "Assessor"] = "IZADORA VILLELA FREITAS"
         nomes_rodrigo = ["RODRIGO DE MELLO D?ELIA", "RODRIGO DE MELLO DELIA"]
         base.loc[base["Assessor"].isin(nomes_rodrigo), "Assessor"] = "RODRIGO DE MELLO D'ELIA"
@@ -468,9 +526,7 @@ def webhook_base_btg():
         return jsonify({"status": "Sucesso", "total": len(base)}), 200
 
     except Exception as e:
-        print(f"[ERRO CRÍTICO BASE_BTG] {e}")
-        registrar_log("BASE_BTG", "Erro", 0, str(e))
-        return jsonify({"erro": str(e)}), 500
+        return erro_interno("BASE_BTG", e)
 
 
 @app.route("/webhook/performance", methods=["POST"])
@@ -484,25 +540,29 @@ def webhook_performance():
 
     conta_id = "Desconhecida"
     try:
-        res        = dados.get("response") or dados.get("partnerResponse") or {}
-        res        = res if isinstance(res, dict) else {}
+        res          = dados.get("response") or dados.get("partnerResponse") or {}
+        res          = res if isinstance(res, dict) else {}
         url_download = res.get("url")
-        data_ref   = res.get("endDate")
-        req_id     = dados.get("idPartnerRequest", "N/A")
+        data_ref     = res.get("endDate")
+        req_id       = dados.get("idPartnerRequest", "N/A")
 
-        conta_raw  = res.get("accountNumber") or dados.get("cge") or dados.get("accountNumber")
-        conta_id   = str(conta_raw) if (conta_raw and str(conta_raw).lower() != "null") else "Desconhecida"
+        conta_raw = res.get("accountNumber") or dados.get("cge") or dados.get("accountNumber")
+        conta_id  = str(conta_raw) if (conta_raw and str(conta_raw).lower() != "null") else "Desconhecida"
 
         if not url_download:
             print(f"[AVISO PERFORMANCE] URL não encontrada. Conta: {conta_id} | ID: {req_id}")
             return jsonify({"erro": "URL não encontrada", "conta": conta_id}), 400
 
+        if not validar_url_download(url_download):
+            registrar_log("PERFORMANCE", "Erro", 0, f"URL bloqueada por política SSRF: {url_download}")
+            return jsonify({"erro": "URL não autorizada"}), 400
+
         r = requests.get(url_download, stream=True)
         r.raise_for_status()
 
         arquivos_salvos = 0
-        conn   = pyodbc.connect(CONN_STR)
-        cursor = conn.cursor()
+        conn_db = pyodbc.connect(CONN_STR)
+        cursor  = conn_db.cursor()
 
         with zipfile.ZipFile(io.BytesIO(r.content)) as z:
             for nome_arquivo in z.namelist():
@@ -521,10 +581,10 @@ def webhook_performance():
                         ON Target.conta = Source.ContaVal
                     WHEN MATCHED THEN
                         UPDATE SET
-                            arquivo_pdf    = ?,
-                            nome_arquivo   = ?,
+                            arquivo_pdf     = ?,
+                            nome_arquivo    = ?,
                             data_referencia = ?,
-                            data_upload    = GETDATE()
+                            data_upload     = GETDATE()
                     WHEN NOT MATCHED THEN
                         INSERT (conta, arquivo_pdf, nome_arquivo, data_referencia, data_upload)
                         VALUES (?, ?, ?, ?, GETDATE());
@@ -532,15 +592,14 @@ def webhook_performance():
                       conta_final, pdf_bytes, nome_arquivo, data_ref))
                 arquivos_salvos += 1
 
-        conn.commit()
-        conn.close()
+        conn_db.commit()
+        conn_db.close()
 
         print(f"[SUCESSO PERFORMANCE] Conta: {conta_id} | Salvos: {arquivos_salvos} | Ref: {data_ref} | ID: {req_id}")
         return jsonify({"status": "Processado", "conta": conta_id}), 200
 
     except Exception as e:
-        print(f"[ERRO CRÍTICO PERFORMANCE] Conta: {conta_id} | Erro: {str(e)[:200]}")
-        return jsonify({"erro": str(e)}), 500
+        return erro_interno("PERFORMANCE", e, conta=conta_id)
 
 
 @app.route("/webhook/custodia", methods=["POST"])
@@ -553,6 +612,10 @@ def webhook_custodia():
         url_download = dados.get("response", {}).get("url")
         if not url_download:
             return jsonify({"status": "Recebido sem URL"}), 200
+
+        if not validar_url_download(url_download):
+            registrar_log("CUSTODIA", "Erro", 0, f"URL bloqueada por política SSRF: {url_download}")
+            return jsonify({"erro": "URL não autorizada"}), 400
 
         r = requests.get(url_download)
         r.raise_for_status()
@@ -568,7 +631,7 @@ def webhook_custodia():
         df_raw["data_recebimento_webhook"] = datetime.now()
         salvar_df_otimizado(df_raw, "backup_custodia_raw", if_exists="replace")
 
-        # Tratamento de datas — mantidas como DATE para queries corretas no banco
+        # Datas mantidas como DATE para queries corretas no banco
         df_final = df.copy()
         for col in ["referenceDate", "dataInicio", "fixingDate", "dataKnockIn"]:
             if col in df_final.columns:
@@ -583,12 +646,10 @@ def webhook_custodia():
         return jsonify({"status": "Sucesso", "linhas": len(df_final)}), 200
 
     except Exception as e:
-        print(f"[ERRO CRÍTICO CUSTODIA] {e}", flush=True)
-        registrar_log("CUSTODIA", "Erro", 0, str(e))
-        return jsonify({"erro": str(e)}), 500
-
+        return erro_interno("CUSTODIA", e)
 
 # 5. UTILITÁRIOS
+
 
 @app.route("/meu-ip", methods=["GET"])
 def get_ip():
@@ -596,7 +657,6 @@ def get_ip():
         return jsonify({"ip_render": requests.get("https://api.ipify.org").text})
     except Exception:
         return jsonify({"erro": "Falha ao obter IP"}), 500
-
 
 # 6. ENTRYPOINT
 
