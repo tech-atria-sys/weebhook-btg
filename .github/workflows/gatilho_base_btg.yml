@@ -3,7 +3,7 @@ name: Gatilho Base BTG
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 09 * * *'
+    - cron: '55 17 * * *'  # 14:55 BRT
 
 jobs:
   disparar_base_btg:

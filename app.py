@@ -13,10 +13,15 @@ from urllib.parse import urlparse, quote_plus
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from flask import Flask, request, jsonify
+from zoneinfo import ZoneInfo
+
 
 app = Flask(__name__)
 
 # 1. CONFIGURAÇÕES
+
+# timezone brasilia: UTC-3, sem DST
+TZ_BRASILIA = ZoneInfo('America/Sao_Paulo')
 
 SERVER_NAME       = os.getenv("SERVER_NAME")
 DATABASE_NAME     = os.getenv("DATABASE_NAME")
@@ -301,7 +306,7 @@ def trigger_carteiras_recomendadas():
                 "rentabilidade_acumulada": carteira.get("accumulatedProfitability"),
                 "inicio_validade":         pd.to_datetime(carteira.get("validityStart"), errors="coerce"),
                 "fim_validade":            pd.to_datetime(carteira.get("validityEnd"),   errors="coerce"),
-                "data_extracao":           datetime.now()
+                "data_extracao":           datetime.now(TZ_BRASILIA)
             }
             ativos = carteira.get("assets", [])
             if ativos:
@@ -373,7 +378,7 @@ def webhook_nnm():
         # intervalo (períodos antigos corrigidos manualmente) ficam intactas.
 
         df_raw = df.copy()
-        df_raw["data_recebimento_webhook"] = datetime.now()
+        df_raw["data_recebimento_webhook"] = datetime.now(TZ_BRASILIA)
 
         with engine.begin() as conn:
             conn.execute(text("""
@@ -404,7 +409,7 @@ def webhook_nnm():
                     .astype(int)
                 )
 
-        df_fato["data_upload"] = datetime.now()
+        df_fato["data_upload"] = datetime.now(TZ_BRASILIA)
 
         with engine.begin() as conn:
             conn.execute(text("""
@@ -461,7 +466,7 @@ def webhook_base_btg():
 
         # Backup raw antes de qualquer transformação
         df_raw = base.copy()
-        df_raw["data_recebimento_webhook"] = datetime.now()
+        df_raw["data_recebimento_webhook"] = datetime.now(TZ_BRASILIA)
         salvar_df_otimizado(df_raw, "backup_base_btg_raw", if_exists="append")
 
         # Rename defensivo — só aplica colunas que existirem no CSV
@@ -514,7 +519,7 @@ def webhook_base_btg():
         salvar_df_otimizado(base, "base_btg", col_pk="Conta", if_exists="replace")
 
         # Histórico diário de PL
-        hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        hoje = datetime.now(TZ_BRASILIA).replace(hour=0, minute=0, second=0, microsecond=0)
         df_hist = base[["Conta", "Assessor", "PL Total"]].copy()
         df_hist["Data"] = hoje
         df_hist["Mês"]  = hoje.strftime("%Y-%m")
@@ -628,7 +633,7 @@ def webhook_custodia():
 
         # Backup raw (replace — custódia é snapshot diário completo)
         df_raw = df.copy()
-        df_raw["data_recebimento_webhook"] = datetime.now()
+        df_raw["data_recebimento_webhook"] = datetime.now(TZ_BRASILIA)
         salvar_df_otimizado(df_raw, "backup_custodia_raw", if_exists="replace")
 
         # Datas mantidas como DATE para queries corretas no banco
@@ -637,7 +642,7 @@ def webhook_custodia():
             if col in df_final.columns:
                 df_final[col] = pd.to_datetime(df_final[col], format="%d/%m/%Y", errors="coerce")
 
-        df_final["data_upload"] = datetime.now()
+        df_final["data_upload"] = datetime.now(TZ_BRASILIA)
         salvar_df_otimizado(df_final, "relatorios_custodia", if_exists="replace")
 
         msg = f"Importação Custódia concluída. Linhas: {len(df_final)}"
