@@ -1,9 +1,9 @@
 name: Carteiras Recomendadas BTG
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '0 11 * * 1-5'  # 08:00 horário de Brasília (UTC-3) — segunda a sexta
-  workflow_dispatch:          # permite disparo manual pelo GitHub quando necessário
+    - cron: '0 11 * * 1-5'  # 08:00 BRT (UTC-3) — segunda a sexta
 
 jobs:
   trigger:
@@ -18,13 +18,13 @@ jobs:
             --retry 3 \
             --retry-delay 10 \
             --retry-all-errors \
-            "https://weebhook-btg.onrender.com/trigger/carteiras-recomendadas?token=583cc82acd14cc115a2f6b2e1cda1ee3")
+            --header "X-Webhook-Token: ${{ secrets.WEBHOOK_TOKEN }}" \
+            -X GET "https://weebhook-btg.onrender.com/trigger/carteiras-recomendadas")
 
           echo "HTTP Status: $HTTP_STATUS"
-          echo "Response:"
           cat response.json
 
           if [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "Falha no trigger — status $HTTP_STATUS"
+            echo "Falha no trigger Carteiras Recomendadas — status $HTTP_STATUS"
             exit 1
           fi
