@@ -31,7 +31,7 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
 
       - name: Instalar dependências
-        run: pip install -r requirements.txt
+        run: pip install -r scripts_de_atualizacao_AZURE/requirements_previa_receita.txt
 
       - name: Executar script de atualização
         env:
