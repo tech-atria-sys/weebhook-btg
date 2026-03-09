@@ -11,17 +11,13 @@ import pandas as pd
 from typing import Optional, Tuple
 from urllib.parse import urlparse, quote_plus
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from sqlalchemy import create_engine, text
 from flask import Flask, request, jsonify
-from zoneinfo import ZoneInfo
-
 
 app = Flask(__name__)
 
 # 1. CONFIGURAÇÕES
-
-# timezone brasilia: UTC-3, sem DST
-TZ_BRASILIA = ZoneInfo('America/Sao_Paulo')
 
 SERVER_NAME       = os.getenv("SERVER_NAME")
 DATABASE_NAME     = os.getenv("DATABASE_NAME")
@@ -48,6 +44,9 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 # Janela curta da tabela de fatos (dias relativos ao max do CSV)
 DIAS_FATO_NNM = 3
 
+# Timezone de Brasília — UTC-3
+TZ_BRASILIA = ZoneInfo("America/Sao_Paulo")
+
 # CONN_STR com valores quoted para evitar quebra por caracteres especiais
 CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
@@ -58,8 +57,8 @@ CONN_STR = (
     f"TrustServerCertificate=yes"
 )
 
-# 2. FUNÇÕES AUXILIARES
 
+# 2. FUNÇÕES AUXILIARES
 
 def get_engine():
     """Cria engine SQLAlchemy. Centralizado para facilitar manutenção."""
@@ -67,6 +66,15 @@ def get_engine():
         f"mssql+pyodbc:///?odbc_connect={CONN_STR}",
         fast_executemany=True
     )
+
+
+def now_brasilia() -> datetime:
+    """
+    Retorna datetime atual no horário de Brasília, sem tzinfo.
+    SQL Server não aceita datetime com timezone — o tzinfo é removido
+    após a conversão para garantir o horário correto no banco.
+    """
+    return datetime.now(TZ_BRASILIA).replace(tzinfo=None)
 
 
 def registrar_log(atividade: str, status: str, linhas: int = 0, mensagem: str = ""):
@@ -164,8 +172,9 @@ def extrair_conta_do_nome(nome_arquivo: str) -> Optional[str]:
 
 def validar_token(req) -> bool:
     """
-    Lê o token do header X-Webhook-Token.
-    Token nunca trafega na URL.
+    Lê o token do header X-Webhook-Token (configurado no cadastro do BTG).
+    Comparação segura contra timing attacks via hmac.compare_digest.
+    Retorna False se WEBHOOK_TOKEN não estiver configurado no Render.
     """
     token_recebido = req.headers.get("X-Webhook-Token", "")
     token_esperado = WEBHOOK_TOKEN or ""
@@ -217,8 +226,8 @@ def erro_interno(atividade: str, e: Exception, conta: str = "") -> tuple:
     registrar_log(atividade, "Erro", 0, detalhe)
     return jsonify({"erro": "Erro interno — consulte os logs"}), 500
 
-# 3. ROTAS DE GATILHO (disparam geração de relatório no BTG)
 
+# 3. ROTAS DE GATILHO (disparam geração de relatório no BTG)
 
 def _trigger_generico(url_relatorio: str, nome_log: str):
     """Lógica comum a todos os triggers de relatório BTG."""
@@ -306,7 +315,7 @@ def trigger_carteiras_recomendadas():
                 "rentabilidade_acumulada": carteira.get("accumulatedProfitability"),
                 "inicio_validade":         pd.to_datetime(carteira.get("validityStart"), errors="coerce"),
                 "fim_validade":            pd.to_datetime(carteira.get("validityEnd"),   errors="coerce"),
-                "data_extracao":           datetime.now(TZ_BRASILIA)
+                "data_extracao":           now_brasilia()
             }
             ativos = carteira.get("assets", [])
             if ativos:
@@ -334,8 +343,8 @@ def trigger_carteiras_recomendadas():
     except Exception as e:
         return erro_interno("CARTEIRAS_RECOM", e)
 
-# 4. WEBHOOKS (recebem o arquivo gerado pelo BTG e persistem no banco)
 
+# 4. WEBHOOKS (recebem o arquivo gerado pelo BTG e persistem no banco)
 
 @app.route("/webhook/nnm", methods=["POST"])
 def webhook_nnm():
@@ -373,12 +382,13 @@ def webhook_nnm():
 
         engine = get_engine()
 
+
         # CAMADA RAW — janela completa do CSV
         # Substitui apenas o intervalo que chegou; edições fora desse
         # intervalo (períodos antigos corrigidos manualmente) ficam intactas.
 
         df_raw = df.copy()
-        df_raw["data_recebimento_webhook"] = datetime.now(TZ_BRASILIA)
+        df_raw["data_recebimento_webhook"] = now_brasilia()
 
         with engine.begin() as conn:
             conn.execute(text("""
@@ -387,6 +397,7 @@ def webhook_nnm():
             """), {"data_min": str_min_csv, "data_max": str_max_csv})
 
         salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
+
 
         # CAMADA DE FATOS — janela curta ancorada no max do CSV
         # Preserva correções manuais em datas anteriores ao corte.
@@ -409,7 +420,7 @@ def webhook_nnm():
                     .astype(int)
                 )
 
-        df_fato["data_upload"] = datetime.now(TZ_BRASILIA)
+        df_fato["data_upload"] = now_brasilia()
 
         with engine.begin() as conn:
             conn.execute(text("""
@@ -466,7 +477,7 @@ def webhook_base_btg():
 
         # Backup raw antes de qualquer transformação
         df_raw = base.copy()
-        df_raw["data_recebimento_webhook"] = datetime.now(TZ_BRASILIA)
+        df_raw["data_recebimento_webhook"] = now_brasilia()
         salvar_df_otimizado(df_raw, "backup_base_btg_raw", if_exists="append")
 
         # Rename defensivo — só aplica colunas que existirem no CSV
@@ -519,7 +530,7 @@ def webhook_base_btg():
         salvar_df_otimizado(base, "base_btg", col_pk="Conta", if_exists="replace")
 
         # Histórico diário de PL
-        hoje = datetime.now(TZ_BRASILIA).replace(hour=0, minute=0, second=0, microsecond=0)
+        hoje = now_brasilia().replace(hour=0, minute=0, second=0, microsecond=0)
         df_hist = base[["Conta", "Assessor", "PL Total"]].copy()
         df_hist["Data"] = hoje
         df_hist["Mês"]  = hoje.strftime("%Y-%m")
@@ -633,7 +644,7 @@ def webhook_custodia():
 
         # Backup raw (replace — custódia é snapshot diário completo)
         df_raw = df.copy()
-        df_raw["data_recebimento_webhook"] = datetime.now(TZ_BRASILIA)
+        df_raw["data_recebimento_webhook"] = now_brasilia()
         salvar_df_otimizado(df_raw, "backup_custodia_raw", if_exists="replace")
 
         # Datas mantidas como DATE para queries corretas no banco
@@ -642,7 +653,7 @@ def webhook_custodia():
             if col in df_final.columns:
                 df_final[col] = pd.to_datetime(df_final[col], format="%d/%m/%Y", errors="coerce")
 
-        df_final["data_upload"] = datetime.now(TZ_BRASILIA)
+        df_final["data_upload"] = now_brasilia()
         salvar_df_otimizado(df_final, "relatorios_custodia", if_exists="replace")
 
         msg = f"Importação Custódia concluída. Linhas: {len(df_final)}"
@@ -653,8 +664,8 @@ def webhook_custodia():
     except Exception as e:
         return erro_interno("CUSTODIA", e)
 
-# 5. UTILITÁRIOS
 
+# 5. UTILITÁRIOS
 
 @app.route("/meu-ip", methods=["GET"])
 def get_ip():
@@ -662,6 +673,7 @@ def get_ip():
         return jsonify({"ip_render": requests.get("https://api.ipify.org").text})
     except Exception:
         return jsonify({"erro": "Falha ao obter IP"}), 500
+
 
 # 6. ENTRYPOINT
 
