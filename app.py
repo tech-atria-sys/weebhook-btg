@@ -630,40 +630,12 @@ def webhook_custodia():
     dados = request.json
     try:
         url_download = dados.get("response", {}).get("url")
+        
+        # Debug temporário — remove após identificar o domínio
+        print(f"[DEBUG CUSTODIA] URL recebida: {url_download}", flush=True)
+        
         if not url_download:
             return jsonify({"status": "Recebido sem URL"}), 200
-
-        if not validar_url_download(url_download):
-            registrar_log("CUSTODIA", "Erro", 0, f"URL bloqueada por política SSRF: {url_download}")
-            return jsonify({"erro": "URL não autorizada"}), 400
-
-        r = requests.get(url_download)
-        r.raise_for_status()
-
-        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-            nome_csv = z.namelist()[0]
-            print(f"[DEBUG CUSTODIA] Lendo: {nome_csv}", flush=True)
-            with z.open(nome_csv) as f:
-                df = pd.read_csv(f, sep=",", encoding="latin1", low_memory=False)
-
-        # Backup raw (replace — custódia é snapshot diário completo)
-        df_raw = df.copy()
-        df_raw["data_recebimento_webhook"] = now_brasilia()
-        salvar_df_otimizado(df_raw, "backup_custodia_raw", if_exists="replace")
-
-        # Datas mantidas como DATE para queries corretas no banco
-        df_final = df.copy()
-        for col in ["referenceDate", "dataInicio", "fixingDate", "dataKnockIn"]:
-            if col in df_final.columns:
-                df_final[col] = pd.to_datetime(df_final[col], format="%d/%m/%Y", errors="coerce")
-
-        df_final["data_upload"] = now_brasilia()
-        salvar_df_otimizado(df_final, "relatorios_custodia", if_exists="replace")
-
-        msg = f"Importação Custódia concluída. Linhas: {len(df_final)}"
-        print(f"[SUCESSO CUSTODIA] {msg}", flush=True)
-        registrar_log("CUSTODIA", "Sucesso", len(df_final), msg)
-        return jsonify({"status": "Sucesso", "linhas": len(df_final)}), 200
 
     except Exception as e:
         return erro_interno("CUSTODIA", e)
