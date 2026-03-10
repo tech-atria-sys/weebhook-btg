@@ -31,10 +31,9 @@ URL_REPORT_NNM      = os.getenv("PARTNER_REPORT_URL_NNM")
 URL_REPORT_BASE     = os.getenv("PARTNER_REPORT_URL_BASEBTG")
 URL_REPORT_CUSTODIA = os.getenv("PARTNER_REPORT_URL_CUSTODIA")
 
-# Domínios autorizados para download de arquivos 
+# Domínios autorizados para download de arquivos (proteção SSRF)
 DOMINIOS_PERMITIDOS = {
     "invest-reports.s3.amazonaws.com",
-    "invest-reports-prd.s3.sa-east-1.amazonaws.com",  
     "api.btgpactual.com",
     "api.ipify.org"
 }
@@ -43,7 +42,7 @@ DOMINIOS_PERMITIDOS = {
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 # Janela curta da tabela de fatos (dias relativos ao max do CSV)
-DIAS_FATO_NNM = 2
+DIAS_FATO_NNM = 3
 
 # Timezone de Brasília — UTC-3
 TZ_BRASILIA = ZoneInfo("America/Sao_Paulo")
@@ -79,6 +78,7 @@ def now_brasilia() -> datetime:
 
 
 def registrar_log(atividade: str, status: str, linhas: int = 0, mensagem: str = ""):
+    """Grava registro de auditoria na tabela de logs."""
     try:
         engine = get_engine()
         with engine.begin() as conn:
@@ -173,15 +173,11 @@ def extrair_conta_do_nome(nome_arquivo: str) -> Optional[str]:
 
 def validar_token(req) -> bool:
     """
-    Aceita token via:
-    - X-Webhook-Token: usado pelos gatilhos do GitHub Actions
-    - X-Api-Key: usado pelo BTG nos callbacks de webhook
+    Lê o token do header X-Webhook-Token (configurado no cadastro do BTG).
+    Comparação segura contra timing attacks via hmac.compare_digest.
+    Retorna False se WEBHOOK_TOKEN não estiver configurado no Render.
     """
-    token_recebido = (
-        req.headers.get("X-Webhook-Token")
-        or req.headers.get("X-Api-Key")
-        or ""
-    )
+    token_recebido = req.headers.get("X-Webhook-Token", "")
     token_esperado = WEBHOOK_TOKEN or ""
     if not token_esperado:
         return False
@@ -477,6 +473,9 @@ def webhook_base_btg():
 
         base = pd.read_csv(io.BytesIO(r.content), sep=";", encoding="utf-8")
 
+        # Debug: loga colunas reais para facilitar diagnóstico
+        print(f"[DEBUG BASE_BTG] Colunas recebidas: {base.columns.tolist()}", flush=True)
+
         # Backup raw antes de qualquer transformação
         df_raw = base.copy()
         df_raw["data_recebimento_webhook"] = now_brasilia()
@@ -484,7 +483,7 @@ def webhook_base_btg():
 
         # Rename defensivo — só aplica colunas que existirem no CSV
         renomear = {
-            "nm_officer":   "Assessor",
+            "nm_assessor":   "Assessor",
             "nr_conta":      "Conta",
             "pl_total":      "PL Total",
             "nome_completo": "Nome",
@@ -640,6 +639,7 @@ def webhook_custodia():
 
         with zipfile.ZipFile(io.BytesIO(r.content)) as z:
             nome_csv = z.namelist()[0]
+            print(f"[DEBUG CUSTODIA] Lendo: {nome_csv}", flush=True)
             with z.open(nome_csv) as f:
                 df = pd.read_csv(f, sep=",", encoding="latin1", low_memory=False)
 
