@@ -14,7 +14,7 @@ on:
     - cron: '55 17 * * *'  # 14:55 BRT
     - cron: '55 18 * * *'  # 15:55 BRT
     - cron: '55 19 * * *'  # 16:55 BRT
-    - cron: '55 20 * * *'  # 17:55 BRT
+    - cron: '55 21 * * *'  # 18:55 BRT
   workflow_dispatch:          # Permite disparo manual quando necessário
 
 jobs:
