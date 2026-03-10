@@ -3,7 +3,7 @@ name: Carteiras Recomendadas BTG
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 11 * * 1-5'  # 08:00 BRT (UTC-3) — segunda a sexta
+    - cron: '00 10 * * 1-5'  # 7:00 BRT (UTC-3) — segunda a sexta
 
 jobs:
   trigger:
