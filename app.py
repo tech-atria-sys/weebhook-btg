@@ -171,10 +171,16 @@ def extrair_conta_do_nome(nome_arquivo: str) -> Optional[str]:
 
 
 def validar_token(req) -> bool:
-    # Debug temporário — remove após identificar o header correto
-    print(f"[DEBUG HEADERS] {dict(req.headers)}", flush=True)
-    
-    token_recebido = req.headers.get("X-Webhook-Token", "")
+    """
+    Aceita token via:
+    - X-Webhook-Token: usado pelos gatilhos do GitHub Actions
+    - X-Api-Key: usado pelo BTG nos callbacks de webhook
+    """
+    token_recebido = (
+        req.headers.get("X-Webhook-Token")
+        or req.headers.get("X-Api-Key")
+        or ""
+    )
     token_esperado = WEBHOOK_TOKEN or ""
     if not token_esperado:
         return False
