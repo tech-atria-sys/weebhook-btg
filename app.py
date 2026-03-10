@@ -171,11 +171,9 @@ def extrair_conta_do_nome(nome_arquivo: str) -> Optional[str]:
 
 
 def validar_token(req) -> bool:
-    """
-    Lê o token do header X-Webhook-Token (configurado no cadastro do BTG).
-    Comparação segura contra timing attacks via hmac.compare_digest.
-    Retorna False se WEBHOOK_TOKEN não estiver configurado no Render.
-    """
+    # Debug temporário — remove após identificar o header correto
+    print(f"[DEBUG HEADERS] {dict(req.headers)}", flush=True)
+    
     token_recebido = req.headers.get("X-Webhook-Token", "")
     token_esperado = WEBHOOK_TOKEN or ""
     if not token_esperado:
