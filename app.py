@@ -477,9 +477,6 @@ def webhook_base_btg():
 
         base = pd.read_csv(io.BytesIO(r.content), sep=";", encoding="utf-8")
 
-        # Debug: loga colunas reais para facilitar diagnóstico
-        print(f"[DEBUG BASE_BTG] Colunas recebidas: {base.columns.tolist()}", flush=True)
-
         # Backup raw antes de qualquer transformação
         df_raw = base.copy()
         df_raw["data_recebimento_webhook"] = now_brasilia()
@@ -643,7 +640,6 @@ def webhook_custodia():
 
         with zipfile.ZipFile(io.BytesIO(r.content)) as z:
             nome_csv = z.namelist()[0]
-            print(f"[DEBUG CUSTODIA] Lendo: {nome_csv}", flush=True)
             with z.open(nome_csv) as f:
                 df = pd.read_csv(f, sep=",", encoding="latin1", low_memory=False)
 
