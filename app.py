@@ -11,7 +11,6 @@ import pandas as pd
 from typing import Optional, Tuple
 from urllib.parse import urlparse, quote_plus
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from sqlalchemy import create_engine, text
 from flask import Flask, request, jsonify
 
@@ -46,7 +45,8 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 DIAS_FATO_NNM = 2
 
 # Timezone de Brasília — UTC-3
-TZ_BRASILIA = ZoneInfo("America/Sao_Paulo")
+def now_brasilia() -> datetime:
+    return datetime.utcnow() - timedelta(hours=3)
 
 # CONN_STR com valores quoted para evitar quebra por caracteres especiais
 CONN_STR = (
@@ -67,16 +67,6 @@ def get_engine():
         f"mssql+pyodbc:///?odbc_connect={CONN_STR}",
         fast_executemany=True
     )
-
-
-def now_brasilia() -> datetime:
-    """
-    Retorna datetime atual no horário de Brasília, sem tzinfo.
-    SQL Server não aceita datetime com timezone — o tzinfo é removido
-    após a conversão para garantir o horário correto no banco.
-    """
-    return datetime.now(TZ_BRASILIA).replace(tzinfo=None)
-
 
 def registrar_log(atividade: str, status: str, linhas: int = 0, mensagem: str = ""):
     """Grava registro de auditoria na tabela de logs."""
