@@ -31,7 +31,7 @@ URL_REPORT_NNM      = os.getenv("PARTNER_REPORT_URL_NNM")
 URL_REPORT_BASE     = os.getenv("PARTNER_REPORT_URL_BASEBTG")
 URL_REPORT_CUSTODIA = os.getenv("PARTNER_REPORT_URL_CUSTODIA")
 
-# Domínios autorizados para download de arquivos (proteção SSRF)
+# Domínios autorizados para download de arquivos 
 DOMINIOS_PERMITIDOS = {
     "invest-reports.s3.amazonaws.com",
     "invest-reports-prd.s3.sa-east-1.amazonaws.com",  
@@ -484,7 +484,7 @@ def webhook_base_btg():
 
         # Rename defensivo — só aplica colunas que existirem no CSV
         renomear = {
-            "nm_assessor":   "Assessor",
+            "nm_officer":   "Assessor",
             "nr_conta":      "Conta",
             "pl_total":      "PL Total",
             "nome_completo": "Nome",
