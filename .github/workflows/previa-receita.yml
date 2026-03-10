@@ -4,17 +4,17 @@ on:
   schedule:
     # Horário de Brasília (UTC-3): 07:55 até 17:55, de hora em hora
     # Segunda a sexta
-    - cron: '55 10 * * 1-5'  # 07:55 BRT
-    - cron: '55 11 * * 1-5'  # 08:55 BRT
-    - cron: '55 12 * * 1-5'  # 09:55 BRT
-    - cron: '55 13 * * 1-5'  # 10:55 BRT
-    - cron: '55 14 * * 1-5'  # 11:55 BRT
-    - cron: '55 15 * * 1-5'  # 12:55 BRT
-    - cron: '55 16 * * 1-5'  # 13:55 BRT
-    - cron: '55 17 * * 1-5'  # 14:55 BRT
-    - cron: '55 18 * * 1-5'  # 15:55 BRT
-    - cron: '55 19 * * 1-5'  # 16:55 BRT
-    - cron: '55 20 * * 1-5'  # 17:55 BRT
+    - cron: '55 10 * * *'  # 07:55 BRT
+    - cron: '55 11 * * *'  # 08:55 BRT
+    - cron: '55 12 * * *'  # 09:55 BRT
+    - cron: '55 13 * * *'  # 10:55 BRT
+    - cron: '55 14 * * *'  # 11:55 BRT
+    - cron: '55 15 * * *'  # 12:55 BRT
+    - cron: '55 16 * * *'  # 13:55 BRT
+    - cron: '55 17 * * *'  # 14:55 BRT
+    - cron: '55 18 * * *'  # 15:55 BRT
+    - cron: '55 19 * * *'  # 16:55 BRT
+    - cron: '55 20 * * *'  # 17:55 BRT
   workflow_dispatch:          # Permite disparo manual quando necessário
 
 jobs:

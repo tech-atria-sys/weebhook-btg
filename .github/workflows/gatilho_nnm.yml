@@ -3,7 +3,7 @@ name: Gatilho Relatorio NNM
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 18 * * 1-5'  # 15:00 BRT (UTC-3) — segunda a sexta
+    - cron: '0 18 * * *'  # 15:00 BRT (UTC-3) — segunda a sexta
 
 jobs:
   disparar_nnm:

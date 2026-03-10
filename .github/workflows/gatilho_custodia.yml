@@ -3,7 +3,7 @@ name: Gatilho Relatorio Custodia
 on:
   workflow_dispatch:
   schedule:
-    - cron: '00 10 * * 1-5'  # 7:00 BRT (UTC-3) — segunda a sexta
+    - cron: '00 10 * * *'  # 7:00 BRT (UTC-3) — segunda a sexta
 
 jobs:
   disparar_relatorio_custodia:

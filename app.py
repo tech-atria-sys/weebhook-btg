@@ -43,7 +43,7 @@ DOMINIOS_PERMITIDOS = {
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 # Janela curta da tabela de fatos (dias relativos ao max do CSV)
-DIAS_FATO_NNM = 3
+DIAS_FATO_NNM = 2
 
 # Timezone de Brasília — UTC-3
 TZ_BRASILIA = ZoneInfo("America/Sao_Paulo")
