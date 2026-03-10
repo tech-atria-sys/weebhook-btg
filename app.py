@@ -69,20 +69,20 @@ def get_engine():
     )
 
 def registrar_log(atividade: str, status: str, linhas: int = 0, mensagem: str = ""):
-    """Grava registro de auditoria na tabela de logs."""
     try:
         engine = get_engine()
         with engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO dbo.logs_atividades
-                    (atividade, status, linhas_processadas, mensagem_detalhe)
+                    (atividade, status, linhas_processadas, mensagem_detalhe, data_hora)
                 VALUES
-                    (:atv, :st, :ln, :msg)
+                    (:atv, :st, :ln, :msg, :dt)
             """), {
                 "atv": atividade,
                 "st":  status,
                 "ln":  linhas,
-                "msg": str(mensagem)[:500]
+                "msg": str(mensagem)[:500],
+                "dt":  now_brasilia()
             })
     except Exception as e:
         print(f"[AVISO] Falha ao gravar log no banco: {e}")
