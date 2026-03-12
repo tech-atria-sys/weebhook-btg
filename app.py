@@ -508,7 +508,7 @@ def webhook_base_btg():
         # Correções de assessores
         base.loc[base["Assessor"] == "MURILO LUIZ SILVA GINO", "Assessor"] = "IZADORA VILLELA FREITAS"
         nomes_rodrigo = ["RODRIGO DE MELLO D?ELIA", "RODRIGO DE MELLO DELIA"]
-        base.loc[base["Assessor"].isin(nomes_rodrigo), "Assessor"] = "RODRIGO DE MELLO D'ELIA"
+        base.loc[base["Assessor"].isin(nomes_rodrigo), "Assessor"] = "RODRIGO DE MELLO D’ELIA"
 
         base.drop_duplicates(subset="Conta", keep="first", inplace=True)
 
