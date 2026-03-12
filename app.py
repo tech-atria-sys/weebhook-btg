@@ -362,13 +362,16 @@ def webhook_nnm():
         df = pd.read_csv(io.StringIO(r.content.decode("utf-8")), sep=";")
         df.rename(columns={"dt_captacao": "data_captacao"}, inplace=True)
 
-        # Âncoras data-driven — não dependem do relógio do servidor
+        # Âncoras data-driven — parse com datetime64 para comparações
         data_min_csv, data_max_csv = parse_datas_csv(df, "data_captacao")
         data_corte_fato = data_max_csv - timedelta(days=DIAS_FATO_NNM)
 
-        str_min_csv    = data_min_csv.strftime("%Y-%m-%d")
-        str_max_csv    = data_max_csv.strftime("%Y-%m-%d")
-        str_corte_fato = data_corte_fato.strftime("%Y-%m-%d")
+        # Converte para date puro APÓS o parse — garante DATE no banco
+        df["data_captacao"] = pd.to_datetime(df["data_captacao"], errors="coerce").dt.date
+
+        str_min_csv    = data_min_csv.strftime("%Y/%m/%d")
+        str_max_csv    = data_max_csv.strftime("%Y/%m/%d")
+        str_corte_fato = data_corte_fato.strftime("%Y/%m/%d")
 
         print(
             f"[DEBUG NNM] CSV: {str_min_csv} → {str_max_csv} | "
@@ -376,11 +379,6 @@ def webhook_nnm():
         )
 
         engine = get_engine()
-
-
-        # CAMADA RAW — janela completa do CSV
-        # Substitui apenas o intervalo que chegou; edições fora desse
-        # intervalo (períodos antigos corrigidos manualmente) ficam intactas.
 
         df_raw = df.copy()
         df_raw["data_recebimento_webhook"] = now_brasilia()
@@ -393,17 +391,13 @@ def webhook_nnm():
 
         salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
 
-
-        # CAMADA DE FATOS — janela curta ancorada no max do CSV
-        # Preserva correções manuais em datas anteriores ao corte.
-
         colunas_tabela = [
             "nr_conta", "data_captacao", "ativo", "mercado", "cge_officer",
             "tipo_lancamento", "descricao", "qtd", "captacao",
             "is_officer_nnm", "is_partner_nnm", "is_channel_nnm", "is_bu_nnm",
             "submercado", "submercado_detalhado"
         ]
-        df_fato = df[df["data_captacao"] > data_corte_fato].copy()
+        df_fato = df[df["data_captacao"] > data_corte_fato.date()].copy()
         df_fato = df_fato[[c for c in colunas_tabela if c in df_fato.columns]].copy()
 
         for col in ["is_officer_nnm", "is_partner_nnm", "is_channel_nnm", "is_bu_nnm"]:
@@ -439,7 +433,6 @@ def webhook_nnm():
         }), 200
 
     except ValueError as e:
-        # Datas nulas no CSV — aborta sem deletar nada no banco
         registrar_log("NNM", "Erro", 0, str(e))
         return jsonify({"erro": str(e)}), 400
 
@@ -525,7 +518,7 @@ def webhook_base_btg():
         hoje = now_brasilia().replace(hour=0, minute=0, second=0, microsecond=0)
         df_hist = base[["Conta", "Assessor", "PL Total"]].copy()
         df_hist["Data"] = hoje
-        df_hist["Mês"]  = hoje.strftime("%Y-%m")
+        df_hist["Mês"]  = hoje.strftime("%Y/%m")
         salvar_df_otimizado(df_hist, "pl_historico_diario", if_exists="append")
 
         msg = f"Base e Histórico atualizados. Total: {len(base)}"
