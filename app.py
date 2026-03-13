@@ -249,7 +249,7 @@ def _load_previa_assessor(advisor_name: str, link: str) -> pd.DataFrame:
         response = requests.get(link, params={"downloadformat": "excel"}, timeout=15)
         response.raise_for_status()
  
-        df = pd.read_excel(BytesIO(response.content), sheet_name="Meta")
+        df = pd.read_excel(io.BytesIO(response.content), sheet_name="Meta")
  
         if len(df.columns) < 5:
             print(f"   [AVISO] Colunas insuficientes para {advisor_name}.")
