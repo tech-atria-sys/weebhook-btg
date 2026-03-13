@@ -13,6 +13,9 @@ from urllib.parse import urlparse, quote_plus
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from flask import Flask, request, jsonify
+from zoneinfo import ZoneInfo
+import sys
+import threading  
 
 app = Flask(__name__)
 
@@ -29,6 +32,25 @@ BTG_CLIENT_SECRET = os.getenv("BTG_CLIENT_SECRET")
 URL_REPORT_NNM      = os.getenv("PARTNER_REPORT_URL_NNM")
 URL_REPORT_BASE     = os.getenv("PARTNER_REPORT_URL_BASEBTG")
 URL_REPORT_CUSTODIA = os.getenv("PARTNER_REPORT_URL_CUSTODIA")
+
+SHAREPOINT_LINKS = [
+    ("RODRIGO DE MELLO D'ELIA",         "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQBVuGicHybdRrC4d1MtFO8vAbY4Kw4m4_8gNo8EKu3BN4I?download=1"),
+    ("CAIC ZEM GOMES",                   "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQByqpoVZXN3TYdcUlFmYqE9Af8AsDkk6umaNM26wLfQlo4?download=1"),
+    ("FERNANDO DOMINGUES DA SILVA",      "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQAFP5cFxU9QRL_OWClG-BJdAT3Wvk18_VoypIF3CxIpQYY?download=1"),
+    ("SAADALLAH JOSE ASSAD",             "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQDjXAOoHHxgQYo_aeQQdXz4AXzuH0TotDouMPG_NNH4H-4?download=1"),
+    ("PAULO ROBERTO FARIA SILVA",        "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQA6mQn9Z8lwTL7HfLdw1UzSAbCoa8qOg03wNZvbJyDoIaw?download=1"),
+    ("MARCOS SOARES PEREIRA FILHO",      "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQAtEitVDNlnT4zWgSIonhfzAQlTKUlOX3xzRRYfgcoHrZE?download=1"),
+    ("RENAN BENTO DA SILVA",             "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQCr2UivmbvdQ4EIlpS8fcTfAVmuuqLXeLhqroDonRcYXDQ?download=1"),
+    ("ROSANA APARECIDA PAVANI DA SILVA", "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQDmCPZulmfjTYtC94MGxHh1ARzYBjyg9gWNL9v2U--M0CQ?download=1"),
+    ("RAFAEL PASOLD MEDEIROS",           "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQBVpoNJYZ8NSY9rnRotpPSPAXlir-PVsE7SItom19ZhijI?download=1"),
+    ("FELIPE AUGUSTO CARDOSO",           "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQCy_TXmqwgLSL2M6iwrcsp0AWNG5plDMI-xPRY363bX2dA?download=1"),
+    ("GUILHERME DE LUCCA BERTELONI",     "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQCZlPDCr4lsTpfTGlsnjvQiAT0lnyonDCFpCKlASYnfES4?download=1"),
+    ("IZADORA VILLELA FREITAS",          "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQD4lZoreFnUQYKgxi0ibLONAV1CwfMLplcscrKNd6ZJPis?download=1"),
+    ("VITOR OLIVEIRA DOS REIS",          "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQAmZYnDo_EeToIhGV7QRgYJAb6YYoMOMaWaAEadD6WOS4I?download=1"),
+]
+ 
+SCHEMA_DEFAULT  = "dbo"
+TZ_BRASILIA     = ZoneInfo("America/Sao_Paulo")
 
 # Domínios autorizados para download de arquivos 
 DOMINIOS_PERMITIDOS = {
@@ -221,6 +243,112 @@ def erro_interno(atividade: str, e: Exception, conta: str = "") -> tuple:
     registrar_log(atividade, "Erro", 0, detalhe)
     return jsonify({"erro": "Erro interno — consulte os logs"}), 500
 
+def _load_previa_assessor(advisor_name: str, link: str) -> pd.DataFrame:
+    """Baixa e parseia a aba 'Meta' do Excel de um assessor."""
+    try:
+        response = requests.get(link, params={"downloadformat": "excel"}, timeout=15)
+        response.raise_for_status()
+ 
+        df = pd.read_excel(BytesIO(response.content), sheet_name="Meta")
+ 
+        if len(df.columns) < 5:
+            print(f"   [AVISO] Colunas insuficientes para {advisor_name}.")
+            return pd.DataFrame()
+ 
+        df.rename(columns={
+            df.columns[0]: "Categoria - Acompanhamento Next",
+            df.columns[1]: "META - ROA",
+            df.columns[2]: "REALIZADO - ROA",
+            df.columns[4]: "REALIZADO - VOLUME",
+        }, inplace=True)
+ 
+        df["META - VOLUME"] = 0.0
+ 
+        if "Categoria - Acompanhamento Next" in df.columns:
+            df = df[df["Categoria - Acompanhamento Next"] != "TOTAL"]
+ 
+        df["Assessor"] = advisor_name
+ 
+        colunas_ordem = [
+            "Categoria - Acompanhamento Next", "META - VOLUME", "REALIZADO - VOLUME",
+            "META - ROA", "REALIZADO - ROA", "Assessor",
+        ]
+        return df[[c for c in colunas_ordem if c in df.columns]]
+ 
+    except Exception as e:
+        print(f"   [ERRO] {advisor_name}: {e}")
+        return pd.DataFrame()
+ 
+ 
+def _executar_previa_receita():
+    """
+    Lógica completa de atualização da Prévia Receita.
+    Roda em thread separada para não bloquear o endpoint.
+    """
+    atividade = "PREVIA_RECEITA"
+    try:
+        primeiro_dia_mes = pd.Timestamp(
+            datetime.now(TZ_BRASILIA).replace(
+                day=1, hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+            )
+        )
+ 
+        # --- Carrega histórico existente ---
+        engine = get_engine()
+        try:
+            hist = pd.read_sql(f"SELECT * FROM {SCHEMA_DEFAULT}.previa_receita_nova", engine)
+            if not hist.empty:
+                hist["Data"] = pd.to_datetime(hist["Data"], errors="coerce")
+                hist = hist[hist["Data"] != primeiro_dia_mes]
+        except Exception:
+            hist = pd.DataFrame()
+ 
+        # --- Coleta dados de cada assessor ---
+        lista_dfs = []
+        for nome, link in SHAREPOINT_LINKS:
+            df_temp = _load_previa_assessor(nome, link)
+            if not df_temp.empty:
+                lista_dfs.append(df_temp)
+                print(f"   [OK] {nome}")
+ 
+        if not lista_dfs:
+            registrar_log(atividade, "Erro", 0, "Nenhum dado coletado dos assessores.")
+            return
+ 
+        previa_receita = pd.concat(lista_dfs, ignore_index=True)
+        previa_receita["Data"]            = primeiro_dia_mes
+        previa_receita["Hora Atualizado"] = datetime.now(TZ_BRASILIA).replace(tzinfo=None)
+ 
+        # --- Consolida com histórico ---
+        previa_final = pd.concat([hist, previa_receita], axis=0, ignore_index=True)
+        previa_final.loc[previa_final["META - VOLUME"] == "-", "META - VOLUME"] = 0
+        previa_final.fillna(0, inplace=True)
+ 
+        salvar_df_otimizado(previa_final, "previa_receita_nova", if_exists="replace", schema=SCHEMA_DEFAULT)
+ 
+        # --- Histórico agregado por assessor ---
+        cols_agg = [c for c in ["Assessor", "Data", "META - ROA", "REALIZADO - ROA"] if c in previa_receita.columns]
+        previa_agg = previa_receita[cols_agg].groupby(["Assessor", "Data"]).sum().reset_index()
+        previa_agg["Data"] = pd.to_datetime(previa_agg["Data"])
+ 
+        try:
+            hist_agg = pd.read_sql(f"SELECT * FROM {SCHEMA_DEFAULT}.previa_receita_assessor_historico", engine)
+            if not hist_agg.empty:
+                hist_agg["Data"] = pd.to_datetime(hist_agg["Data"], errors="coerce")
+                hist_agg = hist_agg[hist_agg["Data"] != primeiro_dia_mes]
+            previa_final_agg = pd.concat([hist_agg, previa_agg], axis=0, ignore_index=True)
+        except Exception:
+            previa_final_agg = previa_agg
+ 
+        salvar_df_otimizado(previa_final_agg, "previa_receita_assessor_historico", if_exists="replace", schema=SCHEMA_DEFAULT)
+ 
+        msg = f"Detalhado: {len(previa_final)} linhas | Agregado: {len(previa_final_agg)} linhas"
+        print(f"[SUCESSO PREVIA_RECEITA] {msg}")
+        registrar_log(atividade, "Sucesso", len(previa_final), msg)
+ 
+    except Exception as e:
+        registrar_log(atividade, "Erro", 0, str(e))
+        print(f"[ERRO CRÍTICO PREVIA_RECEITA] {e}")
 
 # 3. ROTAS DE GATILHO (disparam geração de relatório no BTG)
 
@@ -245,6 +373,15 @@ def _trigger_generico(url_relatorio: str, nome_log: str):
     except Exception as e:
         return erro_interno(nome_log, e)
 
+@app.route("/trigger/previa-receita", methods=["GET"])
+def trigger_previa_receita():
+    if not validar_token(request):
+        return jsonify({"erro": "Acesso negado"}), 403
+ 
+    thread = threading.Thread(target=_executar_previa_receita, daemon=True)
+    thread.start()
+ 
+    return jsonify({"status": "iniciado", "mensagem": "Atualização da Prévia Receita em andamento"}), 202
 
 @app.route("/trigger/nnm", methods=["GET"])
 def trigger_nnm():
@@ -647,6 +784,8 @@ def webhook_custodia():
 
     except Exception as e:
         return erro_interno("CUSTODIA", e)
+
+
 
 
 # 5. UTILITÁRIOS
