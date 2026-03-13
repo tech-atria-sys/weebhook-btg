@@ -1,0 +1,72 @@
+services:
+
+  # ── 07:00 BRT (10:00 UTC) — Segunda a Sexta ──────────────────
+
+  - type: cron
+    name: gatilho-base-btg
+    runtime: python
+    schedule: "00 10 * * 1-5"
+    buildCommand: echo "ok"
+    startCommand: >
+      curl --silent --max-time 30 --retry 3 --retry-delay 10 --retry-all-errors
+      --header "X-Webhook-Token: $WEBHOOK_TOKEN"
+      -X GET "https://weebhook-btg.onrender.com/trigger/basebtg"
+    envVars:
+      - key: WEBHOOK_TOKEN
+        sync: false
+
+  - type: cron
+    name: gatilho-custodia
+    runtime: python
+    schedule: "00 10 * * 1-5"
+    buildCommand: echo "ok"
+    startCommand: >
+      curl --silent --max-time 30 --retry 3 --retry-delay 10 --retry-all-errors
+      --header "X-Webhook-Token: $WEBHOOK_TOKEN"
+      -X GET "https://weebhook-btg.onrender.com/trigger/custodia"
+    envVars:
+      - key: WEBHOOK_TOKEN
+        sync: false
+
+  - type: cron
+    name: gatilho-carteiras-recomendadas
+    runtime: python
+    schedule: "00 10 * * 1-5"
+    buildCommand: echo "ok"
+    startCommand: >
+      curl --silent --max-time 30 --retry 3 --retry-delay 10 --retry-all-errors
+      --header "X-Webhook-Token: $WEBHOOK_TOKEN"
+      -X GET "https://weebhook-btg.onrender.com/trigger/carteiras-recomendadas"
+    envVars:
+      - key: WEBHOOK_TOKEN
+        sync: false
+
+  # ── 15:00 BRT (18:00 UTC) — Segunda a Sexta ──────────────────
+
+  - type: cron
+    name: gatilho-nnm
+    runtime: python
+    schedule: "00 18 * * 1-5"
+    buildCommand: echo "ok"
+    startCommand: >
+      curl --silent --max-time 30 --retry 3 --retry-delay 10 --retry-all-errors
+      --header "X-Webhook-Token: $WEBHOOK_TOKEN"
+      -X GET "https://weebhook-btg.onrender.com/trigger/nnm"
+    envVars:
+      - key: WEBHOOK_TOKEN
+        sync: false
+
+  # ── 07:55 até 18:55 BRT (10:55–21:55 UTC) — Segunda a Sexta ─
+
+  - type: cron
+    name: previa-receita-horaria
+    runtime: python
+    schedule: "55 10-21 * * 1-5"
+    buildCommand: echo "ok"
+    startCommand: >
+      curl --silent --max-time 30 --retry 3 --retry-delay 10 --retry-all-errors
+      --header "X-Webhook-Token: $WEBHOOK_TOKEN"
+      -X GET "https://weebhook-btg.onrender.com/trigger/previa-receita"
+    envVars:
+      - key: WEBHOOK_TOKEN
+        sync: false
