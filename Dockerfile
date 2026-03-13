@@ -25,6 +25,8 @@ COPY . .
 
 RUN chmod +x /app/trigger_previa.sh
 
+RUN chmod +x /app/trigger_nnm.sh
+
 # 7. Configura o servidor
 EXPOSE 10000
 
