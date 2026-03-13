@@ -375,6 +375,10 @@ def _trigger_generico(url_relatorio: str, nome_log: str):
 
 @app.route("/trigger/previa-receita", methods=["GET"])
 def trigger_previa_receita():
+    token_recebido = request.headers.get("X-Webhook-Token") or request.headers.get("X-Api-Key") or ""
+    token_esperado = WEBHOOK_TOKEN or ""
+    print(f"[DEBUG] recebido='{token_recebido}' esperado='{token_esperado}'", flush=True)
+    
     if not validar_token(request):
         return jsonify({"erro": "Acesso negado"}), 403
  
