@@ -23,6 +23,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 6. Copia o código (se certifique que o nome do arquivo aqui bate com o seu CMD abaixo)
 COPY . .
 
+RUN chmod +x /app/trigger_previa.sh
+
 # 7. Configura o servidor
 EXPOSE 10000
 
