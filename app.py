@@ -33,7 +33,7 @@ URL_REPORT_BASE     = os.getenv("PARTNER_REPORT_URL_BASEBTG")
 URL_REPORT_CUSTODIA = os.getenv("PARTNER_REPORT_URL_CUSTODIA")
 
 SHAREPOINT_LINKS = [
-    ("RODRIGO DE MELLO D'ELIA",         "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQBVuGicHybdRrC4d1MtFO8vAbY4Kw4m4_8gNo8EKu3BN4I?download=1"),
+    ("RODRIGO DE MELLO D’ELIA",         "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQBVuGicHybdRrC4d1MtFO8vAbY4Kw4m4_8gNo8EKu3BN4I?download=1"),
     ("CAIC ZEM GOMES",                   "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQByqpoVZXN3TYdcUlFmYqE9Af8AsDkk6umaNM26wLfQlo4?download=1"),
     ("FERNANDO DOMINGUES DA SILVA",      "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQAFP5cFxU9QRL_OWClG-BJdAT3Wvk18_VoypIF3CxIpQYY?download=1"),
     ("SAADALLAH JOSE ASSAD",             "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQDjXAOoHHxgQYo_aeQQdXz4AXzuH0TotDouMPG_NNH4H-4?download=1"),
@@ -82,8 +82,8 @@ FAIXAS_ATE_300K = {"Ate 50K", "Entre 50k e 100k", "Entre 100k e 300k"}
 
 # Correções de assessor conhecidas — aplicadas em todos os pontos da app
 CORRECOES_ASSESSOR = {
-    "RODRIGO DE MELLO D?ELIA": "RODRIGO DE MELLO D'ELIA",
-    "RODRIGO DE MELLO DELIA":  "RODRIGO DE MELLO D'ELIA",
+    "RODRIGO DE MELLO D?ELIA": "RODRIGO DE MELLO D’ELIA",
+    "RODRIGO DE MELLO DELIA":  "RODRIGO DE MELLO D’ELIA",
     "MURILO LUIZ SILVA GINO":  "IZADORA VILLELA FREITAS",
 }
 
