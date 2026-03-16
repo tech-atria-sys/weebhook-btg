@@ -33,7 +33,7 @@ URL_REPORT_BASE     = os.getenv("PARTNER_REPORT_URL_BASEBTG")
 URL_REPORT_CUSTODIA = os.getenv("PARTNER_REPORT_URL_CUSTODIA")
 
 SHAREPOINT_LINKS = [
-    ("RODRIGO DE MELLO D’ELIA",         "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQBVuGicHybdRrC4d1MtFO8vAbY4Kw4m4_8gNo8EKu3BN4I?download=1"),
+    ("RODRIGO DE MELLO D'ELIA",         "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQBVuGicHybdRrC4d1MtFO8vAbY4Kw4m4_8gNo8EKu3BN4I?download=1"),
     ("CAIC ZEM GOMES",                   "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQByqpoVZXN3TYdcUlFmYqE9Af8AsDkk6umaNM26wLfQlo4?download=1"),
     ("FERNANDO DOMINGUES DA SILVA",      "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQAFP5cFxU9QRL_OWClG-BJdAT3Wvk18_VoypIF3CxIpQYY?download=1"),
     ("SAADALLAH JOSE ASSAD",             "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQDjXAOoHHxgQYo_aeQQdXz4AXzuH0TotDouMPG_NNH4H-4?download=1"),
@@ -82,8 +82,8 @@ FAIXAS_ATE_300K = {"Ate 50K", "Entre 50k e 100k", "Entre 100k e 300k"}
 
 # Correções de assessor conhecidas — aplicadas em todos os pontos da app
 CORRECOES_ASSESSOR = {
-    "RODRIGO DE MELLO D?ELIA": "RODRIGO DE MELLO D’ELIA",
-    "RODRIGO DE MELLO DELIA":  "RODRIGO DE MELLO D’ELIA",
+    "RODRIGO DE MELLO D?ELIA": "RODRIGO DE MELLO D'ELIA",
+    "RODRIGO DE MELLO DELIA":  "RODRIGO DE MELLO D'ELIA",
     "MURILO LUIZ SILVA GINO":  "IZADORA VILLELA FREITAS",
 }
 
@@ -979,6 +979,12 @@ def webhook_base_btg():
         print(f"[SUCESSO BASE_BTG] {msg}", flush=True)
         registrar_log("BASE_BTG", "Sucesso", len(base), msg)
 
+        # ── 14. ENCADEAMENTO AUTOMÁTICO ───────────────────────────────────────
+        # Dispara entradas/saídas em thread após base estar atualizada.
+        # Retorna 200 imediatamente — o processo derivado roda em background.
+        thread = threading.Thread(target=_executar_entradas_saidas, daemon=True)
+        thread.start()
+
         return jsonify({
             "status":       "Sucesso",
             "base_btg":     len(base),
@@ -1124,11 +1130,16 @@ def webhook_nnm():
         salvar_df_otimizado(df_fato, "relatorios_nnm_gerencial", if_exists="append")
 
         msg = (
-            f"Raw: {str_min}→{str_max} ({len(df_raw)} linhas) | "
-            f"Fato: {str_corte}→{str_max} ({len(df_fato)} linhas)"
+            f"Raw: {str_min}\u2192{str_max} ({len(df_raw)} linhas) | "
+            f"Fato: {str_corte}\u2192{str_max} ({len(df_fato)} linhas)"
         )
         print(f"[SUCESSO NNM] {msg}")
         registrar_log("NNM", "Sucesso", len(df_fato), msg)
+
+        # Encadeamento automático: dispara cálculo de saídas após NNM processado.
+        # Retorna 200 imediatamente — o processo derivado roda em background.
+        thread = threading.Thread(target=_executar_calculo_saidas, daemon=True)
+        thread.start()
 
         return jsonify({
             "status": "Sucesso",
