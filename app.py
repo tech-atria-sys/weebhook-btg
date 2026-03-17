@@ -585,10 +585,6 @@ def _load_previa_assessor(advisor_name: str, link: str) -> pd.DataFrame:
 
 
 def _executar_previa_receita():
-    """
-    Lógica completa de atualização da Prévia Receita.
-    Roda em thread separada para não bloquear o endpoint.
-    """
     atividade = "PREVIA_RECEITA"
     try:
         primeiro_dia_mes = pd.Timestamp(
@@ -598,16 +594,28 @@ def _executar_previa_receita():
         )
 
         engine = get_engine()
+
+        # --- Carrega histórico e salva META - ROA do mês atual ---
         try:
             hist = pd.read_sql(
                 f"SELECT * FROM {SCHEMA_DEFAULT}.previa_receita_nova", engine
             )
             if not hist.empty:
                 hist["Data"] = pd.to_datetime(hist["Data"], errors="coerce")
+
+                # Salva META - ROA antes de remover o mês atual
+                metas_mes_atual = hist[hist["Data"] == primeiro_dia_mes][
+                    ["Assessor", "Categoria - Acompanhamento Next", "META - ROA"]
+                ].copy()
+
                 hist = hist[hist["Data"] != primeiro_dia_mes]
+            else:
+                metas_mes_atual = pd.DataFrame()
         except Exception:
             hist = pd.DataFrame()
+            metas_mes_atual = pd.DataFrame()
 
+        # --- Coleta dos assessores ---
         lista_dfs = []
         for nome, link in SHAREPOINT_LINKS:
             df_temp = _load_previa_assessor(nome, link)
@@ -623,15 +631,37 @@ def _executar_previa_receita():
         previa_receita["Data"]            = primeiro_dia_mes
         previa_receita["Hora Atualizado"] = datetime.now(TZ_BRASILIA).replace(tzinfo=None)
 
+        # --- Restaura META - ROA do mês atual ---
+        if not metas_mes_atual.empty:
+            previa_receita = previa_receita.merge(
+                metas_mes_atual.rename(columns={"META - ROA": "META - ROA_salva"}),
+                on=["Assessor", "Categoria - Acompanhamento Next"],
+                how="left"
+            )
+            mask = previa_receita["META - ROA_salva"].notna()
+            previa_receita.loc[mask, "META - ROA"] = previa_receita.loc[mask, "META - ROA_salva"]
+            previa_receita.drop(columns=["META - ROA_salva"], inplace=True)
+            print(f"   -> META - ROA restaurada para {mask.sum()} linhas.")
+
         previa_final = pd.concat([hist, previa_receita], axis=0, ignore_index=True)
+
+        # Zera nulos só em colunas numéricas — não destrói datas
         previa_final.loc[previa_final["META - VOLUME"] == "-", "META - VOLUME"] = 0
-        previa_final.fillna(0, inplace=True)
+        colunas_num = previa_final.select_dtypes(include="number").columns
+        previa_final[colunas_num] = previa_final[colunas_num].fillna(0)
+
+        # Cast correto para SQL Server não salvar como string
+        previa_final["Data"] = pd.to_datetime(previa_final["Data"]).astype("datetime64[ms]")
+        previa_final["Hora Atualizado"] = pd.to_datetime(
+            previa_final["Hora Atualizado"], errors="coerce"
+        ).astype("datetime64[ms]")
 
         salvar_df_otimizado(
             previa_final, "previa_receita_nova",
             if_exists="replace", schema=SCHEMA_DEFAULT
         )
 
+        # --- Agregado por assessor ---
         cols_agg = [
             c for c in ["Assessor", "Data", "META - ROA", "REALIZADO - ROA"]
             if c in previa_receita.columns
@@ -651,12 +681,36 @@ def _executar_previa_receita():
             )
             if not hist_agg.empty:
                 hist_agg["Data"] = pd.to_datetime(hist_agg["Data"], errors="coerce")
+
+                # Salva e restaura META - ROA agregada do mês atual
+                metas_agg_mes_atual = hist_agg[
+                    hist_agg["Data"] == primeiro_dia_mes
+                ][["Assessor", "META - ROA"]].copy().rename(
+                    columns={"META - ROA": "META - ROA_salva"}
+                )
+
                 hist_agg = hist_agg[hist_agg["Data"] != primeiro_dia_mes]
+
+                if not metas_agg_mes_atual.empty:
+                    previa_agg = previa_agg.merge(
+                        metas_agg_mes_atual, on="Assessor", how="left"
+                    )
+                    mask_agg = previa_agg["META - ROA_salva"].notna()
+                    previa_agg.loc[mask_agg, "META - ROA"] = (
+                        previa_agg.loc[mask_agg, "META - ROA_salva"]
+                    )
+                    previa_agg.drop(columns=["META - ROA_salva"], inplace=True)
+
             previa_final_agg = pd.concat(
                 [hist_agg, previa_agg], axis=0, ignore_index=True
             )
         except Exception:
             previa_final_agg = previa_agg
+
+        # Cast correto para o agregado também
+        previa_final_agg["Data"] = pd.to_datetime(
+            previa_final_agg["Data"]
+        ).astype("datetime64[ms]")
 
         salvar_df_otimizado(
             previa_final_agg, "previa_receita_assessor_historico",
