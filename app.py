@@ -1222,14 +1222,14 @@ def webhook_nnm():
             )
             base_ref  = pd.read_sql("SELECT Conta, Nome FROM dbo.base_btg", conn)
             migracoes = pd.read_sql(
-                "SELECT CONTA, DATA, [CAPTAÇÃO], Assessor FROM dbo.migracoes_btg "
-                "WHERE DATA >= :corte",
+                text("SELECT CONTA, DATA, [CAPTAÇÃO], Assessor FROM dbo.migracoes_btg "
+                     "WHERE DATA >= :corte"),
                 conn, params={"corte": str_corte}
             )
             offshore  = pd.read_sql(
-                "SELECT Conta AS CONTA, [Data NNM] AS DATA, [NNM BRL] AS [CAPTAÇÃO], Assessor "
-                "FROM dbo.nnm_offshore "
-                "WHERE [Data NNM] >= :corte",
+                text("SELECT Conta AS CONTA, [Data NNM] AS DATA, [NNM BRL] AS [CAPTAÇÃO], Assessor "
+                     "FROM dbo.nnm_offshore "
+                     "WHERE [Data NNM] >= :corte"),
                 conn, params={"corte": str_corte}
             )
             pl_hist = pd.read_sql(
