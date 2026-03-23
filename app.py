@@ -1232,10 +1232,6 @@ def webhook_nnm():
                      "WHERE data_captacao >= :corte"),
                 conn, params={"corte": str_corte}
             )
-            pl_hist = pd.read_sql(
-                "SELECT Conta AS CONTA, [PL Total], Data FROM dbo.pl_historico_diario",
-                conn
-            )
             entradas_saidas = pd.read_sql(
                 "SELECT Conta AS CONTA, [Mês de entrada/saída] FROM dbo.Entradas_e_saidas_consolidado",
                 conn
@@ -1291,11 +1287,22 @@ def webhook_nnm():
         )
 
         # ── 7. DÉBITOS DE SAÍDA (contas inativas) ─────────────────────────────
-        pl_hist["CONTA"] = pl_hist["CONTA"].astype(str).str.strip()
-        pl_hist["Data"]  = pd.to_datetime(pl_hist["Data"], errors="coerce")
-
         contas_inativas = captacao_hoje[captacao_hoje["Situacao"] == "Inativo"] \
             .drop_duplicates(subset="CONTA")
+
+        # Busca PL apenas das contas inativas — evita carregar tabela inteira
+        pl_hist = pd.DataFrame()
+        if not contas_inativas.empty:
+            lista_inativas = "', '".join(contas_inativas["CONTA"].tolist())
+            with engine.connect() as conn:
+                pl_hist = pd.read_sql(
+                    text(f"SELECT Conta AS CONTA, [PL Total], Data "
+                         f"FROM dbo.pl_historico_diario "
+                         f"WHERE Conta IN ('{lista_inativas}')"),
+                    conn
+                )
+            pl_hist["CONTA"] = pl_hist["CONTA"].astype(str).str.strip()
+            pl_hist["Data"]  = pd.to_datetime(pl_hist["Data"], errors="coerce")
 
         debitos = []
         for _, row in contas_inativas.iterrows():
