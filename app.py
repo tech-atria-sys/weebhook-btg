@@ -62,6 +62,7 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 # Janela curta da tabela de fatos NNM (dias relativos ao max do CSV)
 DIAS_FATO_NNM = 2
+JANELA_CAPTACAO_DIAS = 4
 
 # 2. CONSTANTES DE NEGÓCIO — centralizadas para facilitar manutenção
 
@@ -330,7 +331,7 @@ def _executar_calculo_saidas():
 
         with engine.connect() as conn:
             contas_historico = pd.read_sql(
-                "SELECT DISTINCT nr_conta FROM dbo.relatorios_nnm_gerencial", conn
+                "SELECT DISTINCT CONTA AS nr_conta FROM dbo.captacao_historico", conn
             )
             contas_historico["nr_conta"] = contas_historico["nr_conta"].astype(str).str.strip()
 
@@ -346,8 +347,8 @@ def _executar_calculo_saidas():
                 return
 
             saidas_existentes = pd.read_sql(
-                "SELECT DISTINCT nr_conta FROM dbo.relatorios_nnm_gerencial "
-                "WHERE tipo_captacao = 'Saída de conta'",
+                "SELECT DISTINCT CONTA AS nr_conta FROM dbo.captacao_historico "
+                "WHERE [TIPO DE CAPTACAO] = 'Saída de conta'",
                 conn
             )
             saidas_existentes["nr_conta"] = saidas_existentes["nr_conta"].astype(str)
@@ -366,6 +367,7 @@ def _executar_calculo_saidas():
                 SELECT Conta AS nr_conta, [PL Total], Data
                 FROM dbo.pl_historico_diario
                 WHERE Conta IN ({placeholders})
+                ORDER BY Data
             """, conn)
 
         pl_historico["nr_conta"] = pl_historico["nr_conta"].astype(str)
@@ -380,20 +382,37 @@ def _executar_calculo_saidas():
         )
 
         debitos = ultimo_pl.copy()
-        debitos["captacao"]      = debitos["PL Total"] * -1
-        debitos["data_captacao"] = debitos["Data"].dt.date
-        debitos["tipo_captacao"] = "Saída de conta"
-        debitos["mercado"]       = "Saída de conta"
-        debitos["descricao"]     = "Saída de conta"
-        debitos["data_upload"]   = now_brasilia()
+        debitos["CAPTAÇÃO"]         = debitos["PL Total"] * -1
+        debitos["DATA"]             = debitos["Data"]
+        debitos["TIPO DE CAPTACAO"] = "Saída de conta"
+        debitos["MERCADO"]          = "Saída de conta"
+        debitos["Situacao"]         = "Inativo"
 
-        colunas_saida = [
-            "nr_conta", "data_captacao", "captacao",
-            "tipo_captacao", "mercado", "descricao", "data_upload"
-        ]
+        # Assessor atual
+        with engine.connect() as conn:
+            base_ref = pd.read_sql("SELECT Conta, Nome, Assessor FROM dbo.base_btg", conn)
+        base_ref["Conta"] = base_ref["Conta"].astype(str).str.strip()
+
+        debitos["nr_conta"] = debitos["nr_conta"].astype(str).str.strip()
+        debitos = debitos.merge(
+            base_ref.rename(columns={"Conta": "nr_conta", "Assessor": "Assessor_ref"}),
+            on="nr_conta", how="left"
+        )
+        debitos["Assessor"] = debitos["Assessor_ref"].fillna("")
+        debitos["CONTA"]    = debitos["nr_conta"]
+
+        colunas_saida = ["DATA", "CONTA", "CAPTAÇÃO", "Assessor", "TIPO DE CAPTACAO", "MERCADO", "Situacao", "Nome"]
         debitos = debitos[[c for c in colunas_saida if c in debitos.columns]]
 
-        salvar_df_otimizado(debitos, "relatorios_nnm_gerencial", if_exists="append")
+        with engine.begin() as conn:
+            placeholders = ", ".join([f"'{c}'" for c in debitos["CONTA"].tolist()])
+            conn.execute(text(f"""
+                DELETE FROM dbo.captacao_historico
+                WHERE CONTA IN ({placeholders})
+                AND [TIPO DE CAPTACAO] = 'Saída de conta'
+            """))
+
+        salvar_df_otimizado(debitos, "captacao_historico", if_exists="append")
 
         msg = f"{len(debitos)} saídas registradas"
         registrar_log(atividade, "Sucesso", len(debitos), msg)
@@ -1024,11 +1043,84 @@ def webhook_base_btg():
         # ── 12. TABELAS DERIVADAS ─────────────────────────────────────────────
         _atualizar_tipo_clientes(base, engine)
 
+        # ── 12b. PL BASE (histórico mensal) ───────────────────────────────────
+        pl_base_linhas = 0
+        try:
+            primeiro_dia_mes = hoje.strftime("%Y-%m-01")
+
+            # Onshore: extrai Assessor, CONTA, PL do base atual
+            pl_hoje = base[["Assessor", "Conta", "PL Total"]].copy()
+            pl_hoje.rename(columns={"Conta": "CONTA", "PL Total": "PL"}, inplace=True)
+            pl_hoje["Mês"] = hoje.strftime("%Y-%m-%d")
+            pl_hoje["PL"] = pl_hoje["PL"].fillna(0)
+            pl_hoje["Assessor"] = pl_hoje["Assessor"].astype(str).str.upper()
+
+            # Histórico anterior (preserva meses fechados)
+            with engine.connect() as conn:
+                pl_base_hist = pd.read_sql("SELECT * FROM dbo.[PL Base]", conn)
+            pl_base_hist = pl_base_hist[pl_base_hist["Mês"] < primeiro_dia_mes]
+
+            pl_onshore = pd.concat([pl_base_hist, pl_hoje], axis=0, ignore_index=True)
+
+            # Offshore
+            with engine.connect() as conn:
+                pl_offshore_hist = pd.read_sql(
+                    "SELECT * FROM dbo.offshore_adicionar_pl_mes_vigente", conn
+                )
+                pl_offshore = pd.read_sql(
+                    "SELECT Conta, [PL Total], Assessor FROM dbo.pl_offshore", conn
+                )
+
+            pl_offshore_hist = pl_offshore_hist[
+                pl_offshore_hist["Mês"] < primeiro_dia_mes
+            ]
+            pl_offshore_hist["Mês"] = pd.to_datetime(
+                pl_offshore_hist["Mês"]
+            ).dt.strftime("%Y-%m-%d")
+
+            pl_offshore["Mês"] = hoje.strftime("%Y-%m-%d")
+            pl_offshore.rename(
+                columns={"Conta": "CONTA", "PL Total": "PL"}, inplace=True
+            )
+
+            offshore_mes_vigente = pd.concat(
+                [pl_offshore, pl_offshore_hist], axis=0, ignore_index=True
+            )
+            salvar_df_otimizado(
+                offshore_mes_vigente, "offshore_adicionar_pl_mes_vigente",
+                if_exists="replace"
+            )
+
+            # Concat final onshore + offshore
+            pl_final = pd.concat([pl_onshore, offshore_mes_vigente], axis=0, ignore_index=True)
+
+            # Correções de assessor
+            correcoes_pl = {
+                "RODRIGO DE MELLO DELIA":    "RODRIGO DE MELLO D'ELIA",
+                "RODRIGO DE MELLO D?ELIA":   "RODRIGO DE MELLO D'ELIA",
+                "ROSANA PAVANI":             "ROSANA APARECIDA PAVANI DA SILVA",
+                "FERNANDO DOMINGUES":        "FERNANDO DOMINGUES DA SILVA",
+                "MURILO LUIZ SILVA GINO":    "IZADORA VILLELA FREITAS",
+            }
+            pl_final["Assessor"] = pl_final["Assessor"].replace(correcoes_pl)
+
+            pl_final["CONTA"] = pl_final["CONTA"].astype(str)
+            pl_final["Mês"] = pd.to_datetime(pl_final["Mês"])
+            pl_final.drop_duplicates(subset=["CONTA", "Mês"], keep="first", inplace=True)
+
+            salvar_df_otimizado(pl_final, "PL Base", if_exists="replace")
+            pl_base_linhas = len(pl_final)
+            print(f"[BASE_BTG] PL Base atualizado: {pl_base_linhas} linhas", flush=True)
+
+        except Exception as e:
+            print(f"[AVISO BASE_BTG] PL Base não atualizado: {e}", flush=True)
+
         # ── 13. LOG E RESPOSTA ────────────────────────────────────────────────
         msg = (
             f"base_btg: {len(base)} contas | "
             f"snapshot: {len(df_snapshot)} linhas | "
-            f"pl_historico: {len(df_pl_hist)} linhas"
+            f"pl_historico: {len(df_pl_hist)} linhas | "
+            f"pl_base: {pl_base_linhas} linhas"
         )
         print(f"[SUCESSO BASE_BTG] {msg}", flush=True)
         registrar_log("BASE_BTG", "Sucesso", len(base), msg)
@@ -1044,6 +1136,7 @@ def webhook_base_btg():
             "base_btg":     len(base),
             "snapshot":     len(df_snapshot),
             "pl_historico": len(df_pl_hist),
+            "pl_base":      pl_base_linhas,
         }), 200
 
     except Exception as e:
@@ -1081,124 +1174,205 @@ def webhook_nnm():
         if df.empty:
             return jsonify({"status": "Sem dados válidos após filtros"}), 200
 
-        # Datas como DATE nativo — formatação fica na view/apresentação
-        df["data_captacao"] = pd.to_datetime(
-            df["data_captacao"], errors="coerce"
-        ).dt.date
+        df["data_captacao"] = pd.to_datetime(df["data_captacao"], errors="coerce")
+        df.dropna(subset=["data_captacao"], inplace=True)
 
-        data_min_csv = pd.to_datetime(df["data_captacao"].min())
-        data_max_csv = pd.to_datetime(df["data_captacao"].max())
-        data_corte_fato = data_max_csv - timedelta(days=DIAS_FATO_NNM)
-
-        str_min   = data_min_csv.strftime("%Y-%m-%d")
-        str_max   = data_max_csv.strftime("%Y-%m-%d")
-        str_corte = data_corte_fato.strftime("%Y-%m-%d")
+        data_max_csv = df["data_captacao"].max()
+        str_max      = data_max_csv.strftime("%Y-%m-%d")
+        str_min      = df["data_captacao"].min().strftime("%Y-%m-%d")
 
         engine = get_engine()
 
-        # ── BACKUP RAW ────────────────────────────────────────────────────────
+        # ── 1. BACKUP RAW (janela 10 dias) ────────────────────────────────────
         df_raw = df.copy()
         df_raw["data_recebimento_webhook"] = now_brasilia()
+        str_corte_backup = (data_max_csv - timedelta(days=10)).strftime("%Y-%m-%d")
 
         with engine.begin() as conn:
             conn.execute(text("""
                 DELETE FROM dbo.backup_nnm_raw
-                WHERE data_captacao BETWEEN :data_min AND :data_max
-            """), {"data_min": str_min, "data_max": str_max})
+                WHERE data_captacao > :corte
+            """), {"corte": str_corte_backup})
 
         salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
 
-        # ── TABELA FATO ───────────────────────────────────────────────────────
-        colunas_fato = [
-            "nr_conta", "data_captacao", "ativo", "mercado", "cge_officer",
-            "tipo_lancamento", "descricao", "qtd", "captacao",
-            "is_officer_nnm", "is_partner_nnm", "is_channel_nnm", "is_bu_nnm",
-            "submercado", "submercado_detalhado"
-        ]
+        # ── 2. MONTA NNM PADRÃO (D-0 apenas) ─────────────────────────────────
+        # NNM é D-1: data_max_csv é ontem. Reprocessa apenas o dia mais recente do CSV.
+        str_hoje  = now_brasilia().strftime("%Y-%m-%d")
+        data_corte = data_max_csv.replace(hour=0, minute=0, second=0, microsecond=0)
+        str_corte  = data_corte.strftime("%Y-%m-%d")
 
-        df_fato = df[df["data_captacao"] > data_corte_fato.date()].copy()
-        df_fato = df_fato[[c for c in colunas_fato if c in df_fato.columns]].copy()
+        df_nnm = df[df["data_captacao"].dt.date >= data_corte.date()].copy()
 
-        for col in ["is_officer_nnm", "is_partner_nnm", "is_channel_nnm", "is_bu_nnm"]:
-            if col in df_fato.columns:
-                df_fato[col] = (
-                    df_fato[col]
-                    .map({"t": 1, "f": 0, "True": 1, "False": 0})
-                    .fillna(0)
-                    .astype(int)
-                )
+        # Renomeia para padrão captacao_historico
+        df_nnm.rename(columns={
+            "nr_conta":      "CONTA",
+            "data_captacao": "DATA",
+            "captacao":      "CAPTAÇÃO",
+            "mercado":       "MERCADO",
+        }, inplace=True)
 
-        # ── ENRIQUECIMENTO ────────────────────────────────────────────────────
-        # Tipo de captação fixo para entradas via BTG webhook
-        df_fato["tipo_captacao"] = "Padrão"
+        df_nnm["CONTA"]           = df_nnm["CONTA"].astype(str).str.strip()
+        df_nnm["TIPO DE CAPTACAO"] = "Padrão"
 
+        # Assessor via cge_officer → times_nova_empresa
         with engine.connect() as conn:
+            times_df  = pd.read_sql(
+                "SELECT Assessor, [CGE OFFICER] FROM dbo.times_nova_empresa", conn
+            )
+            base_ref  = pd.read_sql("SELECT Conta, Nome FROM dbo.base_btg", conn)
+            migracoes = pd.read_sql(
+                "SELECT CONTA, DATA, [CAPTAÇÃO], Assessor FROM dbo.migracoes_btg "
+                "WHERE DATA >= :corte",
+                conn, params={"corte": str_corte}
+            )
+            offshore  = pd.read_sql(
+                "SELECT Conta AS CONTA, [Data NNM] AS DATA, [NNM BRL] AS [CAPTAÇÃO], Assessor "
+                "FROM dbo.nnm_offshore "
+                "WHERE [Data NNM] >= :corte",
+                conn, params={"corte": str_corte}
+            )
+            pl_hist = pd.read_sql(
+                "SELECT Conta AS CONTA, [PL Total], Data FROM dbo.pl_historico_diario",
+                conn
+            )
+            entradas_saidas = pd.read_sql(
+                "SELECT Conta AS CONTA, [Mês de entrada/saída] FROM dbo.Entradas_e_saidas_consolidado",
+                conn
+            )
 
-            # Assessor: cge_officer → times_nova_empresa
-            try:
-                times_df = pd.read_sql(
-                    "SELECT Assessor, [CGE OFFICER] FROM dbo.times_nova_empresa", conn
-                )
-                times_df["CGE OFFICER"] = times_df["CGE OFFICER"].astype(str).str.strip()
-                df_fato["cge_officer"]  = df_fato["cge_officer"].astype(str).str.strip()
+        times_df["CGE OFFICER"] = times_df["CGE OFFICER"].astype(str).str.strip()
 
-                df_fato = df_fato.merge(
-                    times_df, left_on="cge_officer", right_on="CGE OFFICER", how="left"
-                )
-                df_fato.drop(columns=["CGE OFFICER"], inplace=True)
+        if "cge_officer" in df_nnm.columns:
+            df_nnm["cge_officer"] = df_nnm["cge_officer"].astype(str).str.strip()
+            df_nnm = df_nnm.merge(
+                times_df, left_on="cge_officer", right_on="CGE OFFICER", how="left"
+            )
+            df_nnm.drop(columns=["CGE OFFICER"], errors="ignore", inplace=True)
+        else:
+            df_nnm["Assessor"] = None
 
-            except Exception as e:
-                print(f"[AVISO NNM] Falha ao mapear times_nova_empresa: {e}")
-                df_fato["Assessor"] = None
+        df_nnm = df_nnm[["DATA", "CONTA", "CAPTAÇÃO", "Assessor", "TIPO DE CAPTACAO", "MERCADO"]].copy()
 
-            # Nome e Situação: base_btg
-            # Nome já vem diretamente da base_btg — sem necessidade de Excel externo
-            try:
-                base_ref = pd.read_sql(
-                    "SELECT Conta, Nome FROM dbo.base_btg", conn
-                )
-                base_ref["Conta"] = base_ref["Conta"].astype(str).str.strip()
-                df_fato["nr_conta_str"] = df_fato["nr_conta"].astype(str).str.strip()
+        # ── 3. OFFSHORE D-0 ───────────────────────────────────────────────────
+        if not offshore.empty:
+            offshore["DATA"]           = pd.to_datetime(offshore["DATA"], errors="coerce")
+            offshore["CONTA"]          = offshore["CONTA"].astype(str).str.strip()
+            offshore["TIPO DE CAPTACAO"] = "Offshore"
+            offshore["MERCADO"]        = "Offshore"
+            offshore = offshore[["DATA", "CONTA", "CAPTAÇÃO", "Assessor", "TIPO DE CAPTACAO", "MERCADO"]]
 
-                df_fato = df_fato.merge(
-                    base_ref, left_on="nr_conta_str", right_on="Conta", how="left"
-                )
-                df_fato["Situação"] = df_fato["Conta"].apply(
-                    lambda x: "Ativo" if pd.notnull(x) else "Inativo"
-                )
-                df_fato.drop(columns=["Conta", "nr_conta_str"], inplace=True)
+        # ── 4. MIGRAÇÕES BTG D-0 ──────────────────────────────────────────────
+        CONTAS_HARDCODED = {"590732", "299305", "5173757", "5152837", "5149832", "5917705", "15296593"}
+        if not migracoes.empty:
+            migracoes["CONTA"]           = migracoes["CONTA"].astype(str).str.strip()
+            migracoes["DATA"]            = pd.to_datetime(migracoes["DATA"], errors="coerce")
+            migracoes["TIPO DE CAPTACAO"] = "Migração BTG"
+            migracoes["MERCADO"]         = "Migração BTG"
+            migracoes = migracoes[["DATA", "CONTA", "CAPTAÇÃO", "Assessor", "TIPO DE CAPTACAO", "MERCADO"]]
 
-            except Exception as e:
-                print(f"[AVISO NNM] Falha ao mapear base_btg: {e}")
-                df_fato["Nome"]    = None
-                df_fato["Situação"] = "Desconhecida"
+        # ── 5. CONCAT NNM + OFFSHORE + MIGRAÇÕES ─────────────────────────────
+        partes = [df_nnm]
+        if not offshore.empty:
+            partes.append(offshore)
+        if not migracoes.empty:
+            partes.append(migracoes)
 
-        df_fato["data_upload"] = now_brasilia()
+        captacao_hoje = pd.concat(partes, axis=0, ignore_index=True)
+        captacao_hoje["CONTA"]   = captacao_hoje["CONTA"].astype(str).str.strip()
+        captacao_hoje["CAPTAÇÃO"] = pd.to_numeric(captacao_hoje["CAPTAÇÃO"], errors="coerce").fillna(0)
 
+        # ── 6. SITUAÇÃO ATIVO/INATIVO ─────────────────────────────────────────
+        base_ref["Conta"] = base_ref["Conta"].astype(str).str.strip()
+        contas_ativas_set = set(base_ref["Conta"])
+
+        captacao_hoje["Situacao"] = captacao_hoje["CONTA"].apply(
+            lambda x: "Ativo" if x in contas_ativas_set else "Inativo"
+        )
+
+        # ── 7. DÉBITOS DE SAÍDA (contas inativas) ─────────────────────────────
+        pl_hist["CONTA"] = pl_hist["CONTA"].astype(str).str.strip()
+        pl_hist["Data"]  = pd.to_datetime(pl_hist["Data"], errors="coerce")
+
+        contas_inativas = captacao_hoje[captacao_hoje["Situacao"] == "Inativo"] \
+            .drop_duplicates(subset="CONTA")
+
+        debitos = []
+        for _, row in contas_inativas.iterrows():
+            conta = row["CONTA"]
+            pl_conta = pl_hist[pl_hist["CONTA"] == conta].sort_values("Data")
+            if pl_conta.empty:
+                continue
+            ultimo = pl_conta.iloc[-1]
+            debitos.append({
+                "CONTA":            conta,
+                "CAPTAÇÃO":         float(ultimo["PL Total"]) * -1,
+                "Assessor":         row["Assessor"],
+                "Situacao":         "Inativo",
+                "TIPO DE CAPTACAO": "Saída de conta",
+                "MERCADO":          "Saída de conta",
+                "_data_pl":         ultimo["Data"],
+            })
+
+        if debitos:
+            df_debitos = pd.DataFrame(debitos)
+
+            # Usa data oficial de saída de Entradas_e_saidas_consolidado
+            entradas_saidas["CONTA"] = entradas_saidas["CONTA"].astype(str).str.strip()
+            entradas_saidas = entradas_saidas.drop_duplicates("CONTA", keep="last")
+            df_debitos = df_debitos.merge(entradas_saidas, on="CONTA", how="left")
+            df_debitos["Mês de entrada/saída"] = pd.to_datetime(
+                df_debitos["Mês de entrada/saída"], errors="coerce"
+            )
+            df_debitos["DATA"] = df_debitos["Mês de entrada/saída"].fillna(df_debitos["_data_pl"])
+            df_debitos.drop(columns=["_data_pl", "Mês de entrada/saída"], inplace=True)
+            df_debitos = df_debitos[df_debitos["DATA"].notna()]
+            df_debitos = df_debitos[df_debitos["DATA"].dt.date >= data_corte.date()]
+
+            captacao_hoje = pd.concat([captacao_hoje, df_debitos], axis=0, ignore_index=True)
+
+        # ── 8. ATUALIZA ASSESSOR ATUAL ────────────────────────────────────────
+        assessor_atual = base_ref[["Conta", "Assessor"]].rename(
+            columns={"Conta": "CONTA", "Assessor": "Assessor_atual"}
+        )
+        captacao_hoje = captacao_hoje.merge(assessor_atual, on="CONTA", how="left")
+        captacao_hoje["Assessor"] = captacao_hoje["Assessor_atual"].fillna(captacao_hoje["Assessor"])
+        captacao_hoje.drop(columns=["Assessor_atual"], inplace=True)
+        captacao_hoje["Assessor"] = captacao_hoje["Assessor"].astype(str).str.upper()
+        captacao_hoje = aplicar_correcoes_assessor(captacao_hoje)
+
+        # ── 9. ADICIONA NOME ──────────────────────────────────────────────────
+        nomes = base_ref[["Conta", "Nome"]].rename(columns={"Conta": "CONTA"})
+        nomes.drop_duplicates("CONTA", inplace=True)
+        if "Nome" in captacao_hoje.columns:
+            captacao_hoje.drop(columns=["Nome"], inplace=True)
+        captacao_hoje = captacao_hoje.merge(nomes, on="CONTA", how="left")
+
+        captacao_hoje["DATA"] = pd.to_datetime(captacao_hoje["DATA"], errors="coerce")
+
+        # ── 10. SALVA EM captacao_historico (deleta D-1 e reinsere) ─────────────
         with engine.begin() as conn:
             conn.execute(text("""
-                DELETE FROM dbo.relatorios_nnm_gerencial
-                WHERE data_captacao > :corte
+                DELETE FROM dbo.captacao_historico
+                WHERE CONVERT(DATE, DATA) >= :corte
             """), {"corte": str_corte})
 
-        salvar_df_otimizado(df_fato, "relatorios_nnm_gerencial", if_exists="append")
+        salvar_df_otimizado(captacao_hoje, "captacao_historico", if_exists="append")
 
         msg = (
-            f"Raw: {str_min}\u2192{str_max} ({len(df_raw)} linhas) | "
-            f"Fato: {str_corte}\u2192{str_max} ({len(df_fato)} linhas)"
+            f"Raw backup: {str_min}→{str_max} ({len(df_raw)} linhas) | "
+            f"captacao_historico D-0: {len(captacao_hoje)} linhas"
         )
         print(f"[SUCESSO NNM] {msg}")
-        registrar_log("NNM", "Sucesso", len(df_fato), msg)
+        registrar_log("NNM", "Sucesso", len(captacao_hoje), msg)
 
-        # Encadeamento automático: dispara cálculo de saídas após NNM processado.
-        # Retorna 200 imediatamente — o processo derivado roda em background.
         thread = threading.Thread(target=_executar_calculo_saidas, daemon=True)
         thread.start()
 
         return jsonify({
-            "status": "Sucesso",
-            "raw":  {"de": str_min,   "ate": str_max,   "linhas": len(df_raw)},
-            "fato": {"de": str_corte, "ate": str_max,   "linhas": len(df_fato)}
+            "status":              "Sucesso",
+            "backup_raw":          {"de": str_min, "ate": str_max, "linhas": len(df_raw)},
+            "captacao_historico":  len(captacao_hoje),
         }), 200
 
     except ValueError as e:
