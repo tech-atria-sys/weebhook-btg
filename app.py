@@ -269,9 +269,11 @@ def parse_datas_csv(df: pd.DataFrame, coluna: str) -> Tuple[datetime, datetime]:
 
 
 def erro_interno(atividade: str, e: Exception, conta: str = "") -> tuple:
-    detalhe = f"Conta: {conta} | {str(e)}" if conta else str(e)
+    import traceback
+    tb = traceback.format_exc()
+    detalhe = f"Conta: {conta} | {str(e)}\n{tb}" if conta else f"{str(e)}\n{tb}"
     print(f"[ERRO CRÍTICO {atividade}] {detalhe}")
-    registrar_log(atividade, "Erro", 0, detalhe)
+    registrar_log(atividade, "Erro", 0, detalhe[:2000])
     return jsonify({"erro": "Erro interno — consulte os logs"}), 500
 
 
