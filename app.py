@@ -1196,9 +1196,10 @@ def webhook_nnm():
 
         salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
 
-        # ── 2. MONTA NNM PADRÃO (D-0 apenas) ─────────────────────────────────
-        # NNM é D-1: data_max_csv é ontem. Reprocessa apenas o dia mais recente do CSV.
-        str_hoje  = now_brasilia().strftime("%Y-%m-%d")
+        # ── 2. MONTA NNM PADRÃO ───────────────────────────────────────────────
+        # Corte = data máxima do CSV (pode ser D-0 ou D-1 dependendo do dia).
+        # O CSV decide — não assumimos nada.
+        str_hoje   = now_brasilia().strftime("%Y-%m-%d")
         data_corte = data_max_csv.replace(hour=0, minute=0, second=0, microsecond=0)
         str_corte  = data_corte.strftime("%Y-%m-%d")
 
@@ -1220,6 +1221,9 @@ def webhook_nnm():
             times_df  = pd.read_sql(
                 "SELECT Assessor, [CGE OFFICER] FROM dbo.times_nova_empresa", conn
             )
+            times_df.columns = [c.strip() for c in times_df.columns]
+            if "assessor" in times_df.columns and "Assessor" not in times_df.columns:
+                times_df.rename(columns={"assessor": "Assessor"}, inplace=True)
             base_ref  = pd.read_sql("SELECT Conta, Nome FROM dbo.base_btg", conn)
             migracoes = pd.read_sql(
                 text("SELECT CONTA, DATA, [CAPTAÇÃO], Assessor FROM dbo.migracoes_btg "
@@ -1248,23 +1252,34 @@ def webhook_nnm():
         else:
             df_nnm["Assessor"] = None
 
-        df_nnm = df_nnm[["DATA", "CONTA", "CAPTAÇÃO", "Assessor", "TIPO DE CAPTACAO", "MERCADO"]].copy()
+        if "Assessor" not in df_nnm.columns:
+            df_nnm["Assessor"] = None
+
+        colunas_nnm = ["DATA", "CONTA", "CAPTAÇÃO", "Assessor", "TIPO DE CAPTACAO", "MERCADO"]
+        df_nnm = df_nnm[[c for c in colunas_nnm if c in df_nnm.columns]].copy()
+        for c in colunas_nnm:
+            if c not in df_nnm.columns:
+                df_nnm[c] = None
 
         # ── 3. OFFSHORE D-0 ───────────────────────────────────────────────────
         if not offshore.empty:
-            offshore["DATA"]           = pd.to_datetime(offshore["DATA"], errors="coerce")
-            offshore["CONTA"]          = offshore["CONTA"].astype(str).str.strip()
+            offshore["DATA"]            = pd.to_datetime(offshore["DATA"], errors="coerce")
+            offshore["CONTA"]           = offshore["CONTA"].astype(str).str.strip()
             offshore["TIPO DE CAPTACAO"] = "Offshore"
-            offshore["MERCADO"]        = "Offshore"
+            offshore["MERCADO"]         = "Offshore"
+            if "Assessor" not in offshore.columns:
+                offshore["Assessor"] = None
             offshore = offshore[["DATA", "CONTA", "CAPTAÇÃO", "Assessor", "TIPO DE CAPTACAO", "MERCADO"]]
 
         # ── 4. MIGRAÇÕES BTG D-0 ──────────────────────────────────────────────
         CONTAS_HARDCODED = {"590732", "299305", "5173757", "5152837", "5149832", "5917705", "15296593"}
         if not migracoes.empty:
-            migracoes["CONTA"]           = migracoes["CONTA"].astype(str).str.strip()
-            migracoes["DATA"]            = pd.to_datetime(migracoes["DATA"], errors="coerce")
+            migracoes["CONTA"]            = migracoes["CONTA"].astype(str).str.strip()
+            migracoes["DATA"]             = pd.to_datetime(migracoes["DATA"], errors="coerce")
             migracoes["TIPO DE CAPTACAO"] = "Migração BTG"
-            migracoes["MERCADO"]         = "Migração BTG"
+            migracoes["MERCADO"]          = "Migração BTG"
+            if "Assessor" not in migracoes.columns:
+                migracoes["Assessor"] = None
             migracoes = migracoes[["DATA", "CONTA", "CAPTAÇÃO", "Assessor", "TIPO DE CAPTACAO", "MERCADO"]]
 
         # ── 5. CONCAT NNM + OFFSHORE + MIGRAÇÕES ─────────────────────────────
