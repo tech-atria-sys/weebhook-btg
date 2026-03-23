@@ -1226,7 +1226,7 @@ def webhook_nnm():
             times_df.columns = [c.strip() for c in times_df.columns]
             if "assessor" in times_df.columns and "Assessor" not in times_df.columns:
                 times_df.rename(columns={"assessor": "Assessor"}, inplace=True)
-            base_ref  = pd.read_sql("SELECT Conta, Nome FROM dbo.base_btg", conn)
+            base_ref  = pd.read_sql("SELECT Conta, Nome, Assessor FROM dbo.base_btg", conn)
             migracoes = pd.read_sql(
                 text("SELECT CONTA, DATA, [CAPTAÇÃO], Assessor FROM dbo.migracoes_btg "
                      "WHERE DATA >= :corte"),
