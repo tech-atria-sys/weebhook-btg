@@ -63,7 +63,7 @@ DOMINIOS_PERMITIDOS = {
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 # Janela curta da tabela de fatos NNM (dias relativos ao max do CSV)
-DIAS_FATO_NNM = 2
+DIAS_FATO_NNM = 4
 JANELA_CAPTACAO_DIAS = 4
 
 # 2. CONSTANTES DE NEGÓCIO — centralizadas para facilitar manutenção
