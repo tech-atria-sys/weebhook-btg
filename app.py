@@ -510,6 +510,12 @@ def _executar_entradas_saidas():
             ~movimentacoes["Conta"].isin(CONTAS_IGNORAR)
         ]
 
+        if movimentacoes.empty:
+            registrar_log(atividade, "Sucesso", 0,
+                          f"Nenhuma conta nova ou removida em {data_hoje}")
+            print(f"[ENTRADAS_SAIDAS] Nenhuma movimentacao em {data_hoje}")
+            return
+
         # Correções de assessor centralizadas
         movimentacoes = aplicar_correcoes_assessor(movimentacoes)
 
