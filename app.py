@@ -1288,10 +1288,10 @@ def webhook_nnm():
         salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
 
         # ── 2. MONTA NNM PADRÃO ───────────────────────────────────────────────
-        # Corte = data máxima do CSV (pode ser D-0 ou D-1 dependendo do dia).
-        # O CSV decide — não assumimos nada.
+        # Corte = D-2 em relação ao max do CSV para garantir que dias parciais
+        # (CSV enviado às 15h) sejam reprocessados por completo nas execuções seguintes.
         str_hoje   = now_brasilia().strftime("%Y-%m-%d")
-        data_corte = data_max_csv.replace(hour=0, minute=0, second=0, microsecond=0)
+        data_corte = (data_max_csv - timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
         str_corte  = data_corte.strftime("%Y-%m-%d")
 
         df_nnm = df[df["data_captacao"].dt.date >= data_corte.date()].copy()
