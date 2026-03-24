@@ -31,6 +31,8 @@ BTG_CLIENT_SECRET = os.getenv("BTG_CLIENT_SECRET")
 URL_REPORT_NNM      = os.getenv("PARTNER_REPORT_URL_NNM")
 URL_REPORT_BASE     = os.getenv("PARTNER_REPORT_URL_BASEBTG")
 URL_REPORT_CUSTODIA = os.getenv("PARTNER_REPORT_URL_CUSTODIA")
+URL_POSICAO_PARTNER = "https://api.btgpactual.com/api/v1/position/partner"
+URL_POSICAO_REFRESH = "https://api.btgpactual.com/api/v1/position/refresh"
 
 SHAREPOINT_LINKS = [
     ("RODRIGO DE MELLO D’ELIA",         "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQBVuGicHybdRrC4d1MtFO8vAbY4Kw4m4_8gNo8EKu3BN4I?download=1"),
@@ -110,12 +112,21 @@ COLUNAS_SNAPSHOT = [
 ]
 
 # Colunas salvas no pl_historico_diario
+# Mapeamento: nome da API (base) → nome da coluna no banco
 COLUNAS_PL_HISTORICO = [
     "Conta", "Assessor", "PL Total", "PL Declarado",
     "Faixa Cliente", "Data Vínculo",
     "pl_conta_corrente", "pl_fundos", "pl_renda_fixa",
     "pl_renda_variavel", "pl_previdencia", "pl_derivativos",
 ]
+RENAME_PL_HISTORICO = {
+    "pl_conta_corrente": "Conta Corrente",
+    "pl_fundos":         "Fundos",
+    "pl_renda_fixa":     "Renda Fixa",
+    "pl_renda_variavel":  "Renda Variável",
+    "pl_previdencia":    "Previdência",
+    "pl_derivativos":    "Derivativos",
+}
 
 # 3. INFRAESTRUTURA
 
@@ -794,6 +805,83 @@ def trigger_custodia():
     return _trigger_generico(URL_REPORT_CUSTODIA, "TRIGGER_CUSTODIA")
 
 
+@app.route("/trigger/inspecionar-posicao", methods=["GET"])
+def trigger_inspecionar_posicao():
+    """
+    Endpoint de inspeção: baixa o ZIP de posição do BTG e retorna
+    as colunas e uma amostra das primeiras linhas do CSV.
+    Usar apenas para mapear a estrutura antes de implementar o ETL.
+    """
+    if not validar_token(request):
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    try:
+        token = get_btg_token()
+
+        # Solicita atualização do cache antes de baixar
+        r_refresh = requests.get(
+            URL_POSICAO_REFRESH,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30
+        )
+        print(f"[POSICAO] Refresh status: {r_refresh.status_code}", flush=True)
+
+        # Obtém URL do ZIP
+        r = requests.get(
+            URL_POSICAO_PARTNER,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30
+        )
+        r.raise_for_status()
+        dados = r.json()
+        url_zip = dados.get("url")
+
+        if not url_zip:
+            return jsonify({"erro": "URL do ZIP não retornada", "resposta_btg": dados}), 400
+
+        if not validar_url_download(url_zip):
+            return jsonify({"erro": "URL não autorizada"}), 400
+
+        # Baixa e abre o ZIP
+        r_zip = requests.get(url_zip, timeout=60)
+        r_zip.raise_for_status()
+
+        with zipfile.ZipFile(io.BytesIO(r_zip.content)) as z:
+            arquivos = z.namelist()
+            resultado = {}
+            for nome_arquivo in arquivos:
+                with z.open(nome_arquivo) as f:
+                    # Tenta diferentes encodings e separadores
+                    conteudo = f.read()
+                    for encoding in ["utf-8", "latin1", "cp1252"]:
+                        try:
+                            df = pd.read_csv(
+                                io.BytesIO(conteudo),
+                                sep=None, engine="python",
+                                encoding=encoding,
+                                nrows=3
+                            )
+                            resultado[nome_arquivo] = {
+                                "encoding": encoding,
+                                "colunas": list(df.columns),
+                                "amostra": df.head(2).to_dict(orient="records")
+                            }
+                            break
+                        except Exception:
+                            continue
+                    else:
+                        resultado[nome_arquivo] = {"erro": "Não foi possível parsear o arquivo"}
+
+        return jsonify({
+            "arquivos_no_zip": arquivos,
+            "conteudo": resultado,
+            "metadata_btg": {k: v for k, v in dados.items() if k != "url"}
+        }), 200
+
+    except Exception as e:
+        return erro_interno("INSPECIONAR_POSICAO", e)
+
+
 @app.route("/trigger/previa-receita", methods=["GET"])
 def trigger_previa_receita():
     if not validar_token(request):
@@ -1029,6 +1117,7 @@ def webhook_base_btg():
         df_pl_hist = base[
             [c for c in COLUNAS_PL_HISTORICO if c in base.columns]
         ].copy()
+        df_pl_hist.rename(columns=RENAME_PL_HISTORICO, inplace=True)
         df_pl_hist["Data"] = hoje
         df_pl_hist["Mês"]  = hoje.strftime("%Y/%m")
 
