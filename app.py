@@ -417,6 +417,10 @@ def _executar_calculo_saidas():
         colunas_saida = ["DATA", "CONTA", "CAPTAÇÃO", "Assessor", "TIPO DE CAPTACAO", "MERCADO", "Situacao", "Nome"]
         debitos = debitos[[c for c in colunas_saida if c in debitos.columns]]
 
+        if debitos.empty:
+            registrar_log(atividade, "Sucesso", 0, "Nenhuma saída com PL histórico encontrada")
+            return
+
         with engine.begin() as conn:
             placeholders = ", ".join([f"'{c}'" for c in debitos["CONTA"].tolist()])
             conn.execute(text(f"""
@@ -891,7 +895,7 @@ def trigger_previa_receita():
     thread.start()
     return jsonify({
         "status": "iniciado",
-        "mensagem": "Atualização da Prévia Receita em andamento"
+        "mensagem": "Atualizacao da Previa Receita em andamento"
     }), 202
 
 
@@ -1474,7 +1478,7 @@ def webhook_nnm():
 
         msg = (
             f"Raw backup: {str_min}→{str_max} ({len(df_raw)} linhas) | "
-            f"captacao_historico D-0: {len(captacao_hoje)} linhas"
+            f"captacao_historico {str_corte} ate {str_max}: {len(captacao_hoje)} linhas"
         )
         print(f"[SUCESSO NNM] {msg}")
         registrar_log("NNM", "Sucesso", len(captacao_hoje), msg)
