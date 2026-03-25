@@ -963,7 +963,7 @@ def trigger_inspecionar_posicao():
         )
         r.raise_for_status()
         dados = r.json()
-        url_zip = dados.get("url")
+        url_zip = (dados.get("response") or {}).get("url") or dados.get("url")
 
         if not url_zip:
             return jsonify({"erro": "URL do ZIP não retornada", "resposta_btg": dados}), 400
