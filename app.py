@@ -4,6 +4,7 @@ import re
 import hmac
 import uuid
 import math
+import time
 import zipfile
 import requests
 import pyodbc
@@ -33,6 +34,7 @@ URL_REPORT_BASE     = os.getenv("PARTNER_REPORT_URL_BASEBTG")
 URL_REPORT_CUSTODIA = os.getenv("PARTNER_REPORT_URL_CUSTODIA")
 URL_POSICAO_PARTNER = "https://api.btgpactual.com/api/v1/position/partner"
 URL_POSICAO_REFRESH = "https://api.btgpactual.com/api/v1/position/refresh"
+URL_SALDO_CC        = "https://api.btgpactual.com/api-account-balance/api/v1/account-balance/list"
 
 SHAREPOINT_LINKS = [
     ("RODRIGO DE MELLO D’ELIA",         "https://netorg18892072-my.sharepoint.com/:x:/g/personal/joao_aquino_atriacm_com_br/IQBVuGicHybdRrC4d1MtFO8vAbY4Kw4m4_8gNo8EKu3BN4I?download=1"),
@@ -770,6 +772,111 @@ def _executar_previa_receita():
         registrar_log(atividade, "Erro", 0, str(e))
         print(f"[ERRO CRÍTICO PREVIA_RECEITA] {e}")
 
+def _executar_posicao():
+    """
+    Busca posições de todas as contas via API BTG (síncrono via /partner).
+    Fluxo: refresh → sleep 90s → partner → download ZIP → transforma → grava posicao.
+    """
+    atividade = "POSICAO"
+    try:
+        token = get_btg_token()
+        if not token:
+            registrar_log(atividade, "Erro", 0, "Falha ao obter token BTG")
+            return
+
+        headers_btg = {
+            "x-id-partner-request": str(uuid.uuid4()),
+            "access_token": token,
+            "Content-Type": "application/json"
+        }
+
+        # 1. Dispara atualização do cache no BTG (async — fire & forget)
+        r_refresh = requests.get(URL_POSICAO_REFRESH, headers=headers_btg, timeout=30)
+        print(f"[POSICAO] Refresh status: {r_refresh.status_code}", flush=True)
+
+        # 2. Aguarda geração do arquivo (BTG leva ~60-90s)
+        time.sleep(90)
+
+        # 3. Busca URL do ZIP (síncrono — lê do cache atualizado)
+        headers_btg["x-id-partner-request"] = str(uuid.uuid4())
+        r_partner = requests.get(URL_POSICAO_PARTNER, headers=headers_btg, timeout=30)
+        r_partner.raise_for_status()
+        dados = r_partner.json()
+        url_zip = (dados.get("response") or {}).get("url") or dados.get("url")
+
+        if not url_zip:
+            registrar_log(atividade, "Erro", 0, f"URL do ZIP não retornada: {dados}")
+            return
+
+        if not validar_url_download(url_zip):
+            registrar_log(atividade, "Erro", 0, f"URL nao autorizada: {url_zip}")
+            return
+
+        # 4. Baixa e extrai CSV do ZIP
+        r_zip = requests.get(url_zip, timeout=120)
+        r_zip.raise_for_status()
+
+        with zipfile.ZipFile(io.BytesIO(r_zip.content)) as z:
+            conteudo = z.read(z.namelist()[0])
+
+        df = None
+        for encoding in ["utf-8", "latin1", "cp1252"]:
+            try:
+                df = pd.read_csv(io.BytesIO(conteudo), sep=None, engine="python", encoding=encoding)
+                break
+            except Exception:
+                continue
+
+        if df is None or df.empty:
+            registrar_log(atividade, "Erro", 0, "CSV vazio ou nao parseavel")
+            return
+
+        # 5. Mapeamento de colunas API → schema da tabela posicao
+        # TODO: preencher após rodar GET /trigger/inspecionar-posicao e inspecionar colunas reais
+        RENAME_POSICAO = {
+            # "coluna_api": "Coluna DB",
+        }
+        df.rename(columns=RENAME_POSICAO, inplace=True)
+        df.drop(columns=["ESCRITÓRIO"], errors="ignore", inplace=True)
+
+        # 6. Converte VENCIMENTO para datetime se existir
+        if "VENCIMENTO" in df.columns:
+            df["VENCIMENTO"] = pd.to_datetime(df["VENCIMENTO"], errors="coerce")
+
+        # 7. Merge com base_btg para adicionar Assessor
+        engine = get_engine()
+        with engine.connect() as conn:
+            base_ref = pd.read_sql("SELECT Conta, Assessor FROM dbo.base_btg", conn)
+        base_ref["Conta"] = base_ref["Conta"].astype(str)
+        if "Conta" in df.columns:
+            df["Conta"] = df["Conta"].astype(str)
+            df = df.merge(base_ref, on="Conta", how="left")
+
+        # 8. Adiciona Setor e Subsetor via setores.xlsx
+        try:
+            setores = pd.read_excel(r"C:\Scripts\setores_ativos\setores.xlsx")
+            for col_match in ["Ativo", "Emissor"]:
+                if col_match in df.columns and col_match in setores.columns:
+                    df = df.merge(
+                        setores[[col_match, "Setor", "Subsetor"]].drop_duplicates(col_match),
+                        on=col_match, how="left"
+                    )
+                    break
+        except Exception as e_set:
+            print(f"[POSICAO] Aviso: nao foi possivel carregar setores — {e_set}")
+
+        # 9. Grava no banco (REPLACE total — snapshot D0)
+        salvar_df_otimizado(df, "posicao", if_exists="replace")
+
+        msg = f"{len(df)} posicoes gravadas"
+        print(f"[SUCESSO POSICAO] {msg}", flush=True)
+        registrar_log(atividade, "Sucesso", len(df), msg)
+
+    except Exception as e:
+        registrar_log(atividade, "Erro", 0, str(e))
+        print(f"[ERRO CRITICO POSICAO] {e}")
+
+
 # 6. ROTAS DE GATILHO
 
 def _trigger_generico(url_relatorio: str, nome_log: str):
@@ -890,6 +997,72 @@ def trigger_inspecionar_posicao():
 
     except Exception as e:
         return erro_interno("INSPECIONAR_POSICAO", e)
+
+
+@app.route("/trigger/saldo-cc", methods=["GET"])
+def trigger_saldo_cc():
+    """
+    Busca saldo de todas as contas em tempo real via API BTG e grava saldo_conta_corrente.
+    Chamada sincrona — retorna resultado direto.
+    """
+    if not validar_token(request):
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    atividade = "SALDO_CC"
+    try:
+        token = get_btg_token()
+        if not token:
+            registrar_log(atividade, "Erro", 0, "Falha ao obter token BTG")
+            return jsonify({"erro": "Falha ao autenticar"}), 502
+
+        headers_btg = {
+            "x-id-partner-request": str(uuid.uuid4()),
+            "access_token": token,
+            "Content-Type": "application/json"
+        }
+
+        r = requests.get(URL_SALDO_CC, headers=headers_btg, timeout=30)
+        r.raise_for_status()
+
+        accounts = r.json().get("accounts", [])
+        if not accounts:
+            registrar_log(atividade, "Sucesso", 0, "Nenhuma conta retornada pela API")
+            return jsonify({"status": "ok", "linhas": 0}), 200
+
+        df = pd.DataFrame(accounts)
+        df.rename(columns={"account": "Conta", "balance": "SALDO"}, inplace=True)
+        df["Conta"] = df["Conta"].astype(str).str.strip()
+        df["SALDO"] = pd.to_numeric(df["SALDO"], errors="coerce")
+
+        # Adiciona Assessor via base_btg
+        engine = get_engine()
+        with engine.connect() as conn:
+            base_ref = pd.read_sql("SELECT Conta, Assessor FROM dbo.base_btg", conn)
+        base_ref["Conta"] = base_ref["Conta"].astype(str)
+        df = df.merge(base_ref, on="Conta", how="left")
+
+        # Mantém apenas colunas da tabela destino
+        df = df[["Conta", "SALDO", "Assessor"]]
+
+        salvar_df_otimizado(df, "saldo_conta_corrente", if_exists="replace", col_pk="Conta")
+
+        msg = f"{len(df)} contas gravadas"
+        registrar_log(atividade, "Sucesso", len(df), msg)
+        return jsonify({"status": "ok", "linhas": len(df)}), 200
+
+    except Exception as e:
+        return erro_interno(atividade, e)
+
+
+@app.route("/trigger/posicao", methods=["GET"])
+def trigger_posicao():
+    """Atualiza tabela posicao via API BTG (refresh → 90s → partner → REPLACE)."""
+    if not validar_token(request):
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    thread = threading.Thread(target=_executar_posicao, daemon=True)
+    thread.start()
+    return jsonify({"status": "iniciado", "info": "refresh → 90s → download → posicao"}), 202
 
 
 @app.route("/trigger/previa-receita", methods=["GET"])
