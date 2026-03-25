@@ -32,8 +32,8 @@ BTG_CLIENT_SECRET = os.getenv("BTG_CLIENT_SECRET")
 URL_REPORT_NNM      = os.getenv("PARTNER_REPORT_URL_NNM")
 URL_REPORT_BASE     = os.getenv("PARTNER_REPORT_URL_BASEBTG")
 URL_REPORT_CUSTODIA = os.getenv("PARTNER_REPORT_URL_CUSTODIA")
-URL_POSICAO_PARTNER = "https://api.btgpactual.com/api/v1/position/partner"
-URL_POSICAO_REFRESH = "https://api.btgpactual.com/api/v1/position/refresh"
+URL_POSICAO_PARTNER = "https://api.btgpactual.com/iaas-api-position/api/v1/position/partner"
+URL_POSICAO_REFRESH = "https://api.btgpactual.com/iaas-api-position/api/v1/position/refresh"
 URL_SALDO_CC        = "https://api.btgpactual.com/api-account-balance/api/v1/account-balance/list"
 
 SHAREPOINT_LINKS = [
