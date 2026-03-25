@@ -935,18 +935,27 @@ def trigger_inspecionar_posicao():
     try:
         token = get_btg_token()
 
+        headers_btg = {
+            "x-id-partner-request": str(uuid.uuid4()),
+            "access_token": token,
+            "Content-Type": "application/json"
+        }
+
         # Solicita atualização do cache antes de baixar
         r_refresh = requests.get(
             URL_POSICAO_REFRESH,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers_btg,
             timeout=30
         )
         print(f"[POSICAO] Refresh status: {r_refresh.status_code}", flush=True)
 
+        time.sleep(90)
+
         # Obtém URL do ZIP
+        headers_btg["x-id-partner-request"] = str(uuid.uuid4())
         r = requests.get(
             URL_POSICAO_PARTNER,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers_btg,
             timeout=30
         )
         r.raise_for_status()
