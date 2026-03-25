@@ -947,7 +947,10 @@ def trigger_inspecionar_posicao():
             headers=headers_btg,
             timeout=30
         )
-        print(f"[POSICAO] Refresh status: {r_refresh.status_code}", flush=True)
+        print(f"[POSICAO] Refresh status: {r_refresh.status_code} | Body: {r_refresh.text[:300]}", flush=True)
+
+        if r_refresh.status_code not in (200, 202):
+            return jsonify({"erro": "Refresh falhou", "status": r_refresh.status_code, "body": r_refresh.text[:300]}), 502
 
         time.sleep(90)
 
@@ -1105,7 +1108,7 @@ def trigger_calcular_entradas_saidas():
 @app.route("/trigger/calcular-saidas", methods=["GET"])
 def trigger_calcular_saidas():
     """
-    Detecta contas inativas e registra débitos em relatorios_nnm_gerencial.
+    Detecta contas inativas e registra débitos em captacao_historico.
     Deve ser chamado após calcular-entradas-saidas.
     """
     if not validar_token(request):
@@ -1215,6 +1218,13 @@ def webhook_base_btg():
         df_raw = base.copy()
         df_raw["data_recebimento_webhook"] = now_brasilia()
         salvar_df_otimizado(df_raw, "backup_base_btg_raw", if_exists="append")
+
+        # TTL: remove registros com mais de 90 dias
+        with engine.begin() as conn:
+            conn.execute(text("""
+                DELETE FROM dbo.backup_base_btg_raw
+                WHERE data_recebimento_webhook < DATEADD(DAY, -90, GETDATE())
+            """))
 
         # ── 3. RENAME ─────────────────────────────────────────────────────────
         renomear_presentes = {
@@ -1479,6 +1489,13 @@ def webhook_nnm():
             """), {"corte": str_corte_backup})
 
         salvar_df_otimizado(df_raw, "backup_nnm_raw", if_exists="append")
+
+        # TTL: remove registros com mais de 90 dias
+        with engine.begin() as conn:
+            conn.execute(text("""
+                DELETE FROM dbo.backup_nnm_raw
+                WHERE data_recebimento_webhook < DATEADD(DAY, -90, GETDATE())
+            """))
 
         # ── 2. MONTA NNM PADRÃO ───────────────────────────────────────────────
         # Corte = D-2 em relação ao max do CSV para garantir que dias parciais
@@ -1819,6 +1836,100 @@ def webhook_custodia():
 
     except Exception as e:
         return erro_interno("CUSTODIA", e)
+
+
+@app.route("/webhook/posicao", methods=["POST"])
+def webhook_posicao():
+    """
+    Recebe URL do ZIP de posições via webhook BTG (positions-by-partner).
+    Transforma e grava na tabela posicao (REPLACE).
+    """
+    if not validar_token(request):
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    dados = request.json
+    if not dados:
+        return jsonify({"erro": "Payload vazio"}), 400
+
+    atividade = "POSICAO_WEBHOOK"
+    try:
+        url_zip = (dados.get("response") or {}).get("url")
+        if not url_zip:
+            registrar_log(atividade, "Aviso", 0, f"Payload sem URL: {str(dados)[:300]}")
+            return jsonify({"status": "Recebido sem URL"}), 200
+
+        if not validar_url_download(url_zip):
+            registrar_log(atividade, "Erro", 0,
+                          f"URL bloqueada por politica SSRF: {url_zip}")
+            return jsonify({"erro": "URL nao autorizada"}), 400
+
+        # Baixa e extrai CSV do ZIP
+        r_zip = requests.get(url_zip, timeout=120)
+        r_zip.raise_for_status()
+
+        with zipfile.ZipFile(io.BytesIO(r_zip.content)) as z:
+            conteudo = z.read(z.namelist()[0])
+
+        df = None
+        for encoding in ["utf-8", "latin1", "cp1252"]:
+            try:
+                df = pd.read_csv(
+                    io.BytesIO(conteudo), sep=None,
+                    engine="python", encoding=encoding
+                )
+                break
+            except Exception:
+                continue
+
+        if df is None or df.empty:
+            registrar_log(atividade, "Erro", 0, "CSV vazio ou nao parseavel")
+            return jsonify({"erro": "CSV invalido"}), 400
+
+        # TODO: preencher apos inspecionar colunas reais do CSV
+        # Chamar GET /trigger/inspecionar-posicao para obter os nomes das colunas
+        RENAME_POSICAO = {
+            # "coluna_api": "Coluna DB",
+        }
+        df.rename(columns=RENAME_POSICAO, inplace=True)
+        df.drop(columns=["ESCRITÓRIO"], errors="ignore", inplace=True)
+
+        if "VENCIMENTO" in df.columns:
+            df["VENCIMENTO"] = pd.to_datetime(df["VENCIMENTO"], errors="coerce")
+
+        # Adiciona Assessor via base_btg
+        engine = get_engine()
+        with engine.connect() as conn:
+            base_ref = pd.read_sql(
+                "SELECT Conta, Assessor FROM dbo.base_btg", conn
+            )
+        base_ref["Conta"] = base_ref["Conta"].astype(str)
+        if "Conta" in df.columns:
+            df["Conta"] = df["Conta"].astype(str)
+            df = df.merge(base_ref, on="Conta", how="left")
+
+        # Adiciona Setor e Subsetor via setores.xlsx
+        try:
+            setores = pd.read_excel(r"C:\Scripts\setores_ativos\setores.xlsx")
+            for col_match in ["Ativo", "Emissor"]:
+                if col_match in df.columns and col_match in setores.columns:
+                    df = df.merge(
+                        setores[[col_match, "Setor", "Subsetor"]]
+                        .drop_duplicates(col_match),
+                        on=col_match, how="left"
+                    )
+                    break
+        except Exception as e_set:
+            print(f"[POSICAO] Aviso: nao foi possivel carregar setores — {e_set}")
+
+        salvar_df_otimizado(df, "posicao", if_exists="replace")
+
+        msg = f"{len(df)} posicoes gravadas"
+        print(f"[SUCESSO POSICAO_WEBHOOK] {msg}", flush=True)
+        registrar_log(atividade, "Sucesso", len(df), msg)
+        return jsonify({"status": "Sucesso", "linhas": len(df)}), 200
+
+    except Exception as e:
+        return erro_interno(atividade, e)
 
 
 @app.route("/webhook/offshore", methods=["POST"])
