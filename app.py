@@ -1032,7 +1032,7 @@ def trigger_saldo_cc():
 
         df = pd.DataFrame(accounts)
         df.rename(columns={"account": "Conta", "balance": "SALDO"}, inplace=True)
-        df["Conta"] = df["Conta"].astype(str).str.strip()
+        df["Conta"] = df["Conta"].astype(str).str.strip().str.lstrip("0")
         df["SALDO"] = pd.to_numeric(df["SALDO"], errors="coerce")
 
         # Adiciona Assessor via base_btg
