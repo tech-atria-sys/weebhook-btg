@@ -1024,7 +1024,8 @@ def trigger_saldo_cc():
         r = requests.get(URL_SALDO_CC, headers=headers_btg, timeout=30)
         r.raise_for_status()
 
-        accounts = r.json().get("accounts", [])
+        payload = r.json()
+        accounts = payload if isinstance(payload, list) else payload.get("accounts", [])
         if not accounts:
             registrar_log(atividade, "Sucesso", 0, "Nenhuma conta retornada pela API")
             return jsonify({"status": "ok", "linhas": 0}), 200
