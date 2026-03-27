@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import json
 import hmac
 import uuid
 import math
@@ -655,9 +656,9 @@ def _executar_previa_receita():
                 hist = hist[hist["Data"] != primeiro_dia_mes]
             else:
                 metas_mes_atual = pd.DataFrame()
-        except Exception:
-            hist = pd.DataFrame()
-            metas_mes_atual = pd.DataFrame()
+        except Exception as e:
+            registrar_log(atividade, "Erro", 0, f"Falha ao carregar histórico previa_receita_nova — abortando para não destruir dados: {e}")
+            return
 
         # --- Coleta dos assessores ---
         lista_dfs = []
@@ -748,8 +749,9 @@ def _executar_previa_receita():
             previa_final_agg = pd.concat(
                 [hist_agg, previa_agg], axis=0, ignore_index=True
             )
-        except Exception:
-            previa_final_agg = previa_agg
+        except Exception as e:
+            registrar_log(atividade, "Erro", 0, str(e))
+            return
 
         # Cast correto para o agregado também
         previa_final_agg["Data"] = pd.to_datetime(
@@ -771,6 +773,155 @@ def _executar_previa_receita():
     except Exception as e:
         registrar_log(atividade, "Erro", 0, str(e))
         print(f"[ERRO CRÍTICO PREVIA_RECEITA] {e}")
+
+def _parse_posicao_zip(zip_bytes: bytes) -> pd.DataFrame:
+    """
+    Faz parse do ZIP de posições BTG (1 JSON por conta) e retorna DataFrame
+    com schema compatível com a tabela posicao.
+    """
+    COLUNAS = [
+        "Conta", "Mercado", "Sub Mercado", "Ativo", "Produto", "CNPJ", "Emissor",
+        "Data Compra", "Taxa Compra", "Taxa Emissão", "VENCIMENTO", "Quantidade",
+        "Valor Bruto", "Soma de IR", "Soma de IOF", "Valor Líquido",
+        "Estratégia", "Data", "Data Cotização Prev", "Tipo Plano", "ID",
+    ]
+    rows = []
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+        for nome in z.namelist():
+            try:
+                data = json.loads(z.read(nome).decode("utf-8"))
+            except Exception:
+                continue
+
+            conta    = str(data.get("AccountNumber", "")).lstrip("0")
+            pos_date = pd.to_datetime(data.get("PositionDate"), errors="coerce")
+
+            # Renda Fixa
+            for fi in data.get("FixedIncome") or []:
+                acq0 = (fi.get("Acquisitions") or [{}])[0]
+                rows.append({
+                    "Conta":         conta,
+                    "Mercado":       "Renda Fixa",
+                    "Sub Mercado":   fi.get("AccountingGroupCode"),
+                    "Ativo":         fi.get("Ticker") or fi.get("CetipCode") or fi.get("SecurityCode"),
+                    "Produto":       fi.get("Ticker") or fi.get("AccountingGroupCode"),
+                    "Emissor":       fi.get("Issuer"),
+                    "Data Compra":   pd.to_datetime(acq0.get("AcquisitionDate"), errors="coerce"),
+                    "Taxa Compra":   acq0.get("YieldToMaturity"),
+                    "Taxa Emissão":  fi.get("Yield"),
+                    "VENCIMENTO":    pd.to_datetime(fi.get("MaturityDate"), errors="coerce"),
+                    "Quantidade":    fi.get("Quantity"),
+                    "Valor Bruto":   fi.get("GrossValue"),
+                    "Soma de IR":    fi.get("IncomeTax"),
+                    "Soma de IOF":   fi.get("IOFTax"),
+                    "Valor Líquido": fi.get("NetValue"),
+                    "ID":            fi.get("FTSId"),
+                    "Data":          pos_date,
+                })
+
+            # Fundos de Investimento
+            for fe in data.get("InvestmentFund") or []:
+                fund = fe.get("Fund") or {}
+                acqs = fe.get("Acquisition") or []
+                rows.append({
+                    "Conta":         conta,
+                    "Mercado":       "Fundos de Investimento",
+                    "Sub Mercado":   "FN",
+                    "Ativo":         fund.get("SecurityCode"),
+                    "Produto":       fund.get("FundName"),
+                    "CNPJ":          fund.get("FundCNPJCode"),
+                    "Emissor":       fund.get("ManagerName"),
+                    "Data Compra":   pd.to_datetime(acqs[0].get("AcquisitionDate") if acqs else None, errors="coerce"),
+                    "VENCIMENTO":    None,
+                    "Quantidade":    sum(float(a.get("NumberOfShares") or 0) for a in acqs),
+                    "Valor Bruto":   sum(float(a.get("GrossAssetValue") or 0) for a in acqs),
+                    "Soma de IR":    sum(float(a.get("IncomeTax") or 0) for a in acqs),
+                    "Soma de IOF":   sum(float(a.get("VirtualIOF") or 0) for a in acqs),
+                    "Valor Líquido": sum(float(a.get("NetAssetValue") or 0) for a in acqs),
+                    "Data":          pos_date,
+                })
+
+            # COE (FixedIncomeStructuredNote)
+            for coe in data.get("FixedIncomeStructuredNote") or []:
+                rows.append({
+                    "Conta":         conta,
+                    "Mercado":       "COE",
+                    "Sub Mercado":   coe.get("AccountingGroupCode"),
+                    "Ativo":         coe.get("Ticker") or coe.get("CetipCode") or coe.get("SecurityCode"),
+                    "Produto":       coe.get("FantasyName") or coe.get("Description"),
+                    "Emissor":       coe.get("Issuer"),
+                    "Data Compra":   pd.to_datetime(coe.get("IssueDate"), errors="coerce"),
+                    "Taxa Compra":   coe.get("YieldToMaturity"),
+                    "Taxa Emissão":  coe.get("Yield"),
+                    "VENCIMENTO":    pd.to_datetime(coe.get("MaturityDate"), errors="coerce"),
+                    "Quantidade":    coe.get("Quantity"),
+                    "Valor Bruto":   coe.get("GrossValue"),
+                    "Soma de IR":    coe.get("IncomeTax"),
+                    "Soma de IOF":   coe.get("IOFTax"),
+                    "Valor Líquido": coe.get("NetValue"),
+                    "Data":          pos_date,
+                })
+
+            # Cash Invested (CDB Plus, LFT líquido, etc.)
+            for cash_entry in data.get("Cash") or []:
+                for ci in cash_entry.get("CashInvested") or []:
+                    rows.append({
+                        "Conta":         conta,
+                        "Mercado":       "Conta Corrente",
+                        "Sub Mercado":   "CC",
+                        "Ativo":         ci.get("Name"),
+                        "Produto":       ci.get("Name"),
+                        "Data Compra":   pd.to_datetime(ci.get("AcquisitionDate"), errors="coerce"),
+                        "Taxa Compra":   ci.get("Yield"),
+                        "VENCIMENTO":    pd.to_datetime(ci.get("MaturityDate"), errors="coerce"),
+                        "Quantidade":    ci.get("Quantity"),
+                        "Valor Bruto":   ci.get("GrossValue"),
+                        "Soma de IR":    ci.get("IncomeTax"),
+                        "Soma de IOF":   ci.get("IofTax"),
+                        "Valor Líquido": ci.get("NetValue"),
+                        "Data":          pos_date,
+                    })
+
+            # Renda Variável (Ações)
+            for eq_entry in data.get("Equities") or []:
+                for stock in eq_entry.get("StockPositions") or []:
+                    rows.append({
+                        "Conta":         conta,
+                        "Mercado":       "Renda Variável",
+                        "Sub Mercado":   "RV",
+                        "Ativo":         stock.get("Ticker") or stock.get("SecurityCode"),
+                        "Produto":       stock.get("Ticker") or stock.get("CompanyName"),
+                        "Emissor":       stock.get("CompanyName"),
+                        "Quantidade":    stock.get("Quantity") or stock.get("TotalQuantity"),
+                        "Valor Bruto":   stock.get("GrossValue") or stock.get("MarketValue"),
+                        "Valor Líquido": stock.get("NetValue") or stock.get("MarketValue"),
+                        "Data":          pos_date,
+                    })
+                for fwd in eq_entry.get("ForwardPositions") or []:
+                    rows.append({
+                        "Conta":       conta,
+                        "Mercado":     "Renda Variável",
+                        "Sub Mercado": "Termo",
+                        "Ativo":       fwd.get("Ticker") or fwd.get("SecurityCode"),
+                        "Produto":     fwd.get("Ticker"),
+                        "VENCIMENTO":  pd.to_datetime(
+                            fwd.get("MaturityDate") or fwd.get("ExpirationDate"), errors="coerce"
+                        ),
+                        "Quantidade":  fwd.get("Quantity"),
+                        "Valor Bruto": fwd.get("GrossValue") or fwd.get("ContractValue"),
+                        "Data":        pos_date,
+                    })
+
+    if not rows:
+        return pd.DataFrame(columns=COLUNAS)
+
+    df = pd.DataFrame(rows)
+    for col in COLUNAS:
+        if col not in df.columns:
+            df[col] = None
+    return df[COLUNAS]
+
 
 def _executar_posicao():
     """
@@ -812,38 +963,17 @@ def _executar_posicao():
             registrar_log(atividade, "Erro", 0, f"URL nao autorizada: {url_zip}")
             return
 
-        # 4. Baixa e extrai CSV do ZIP
+        # 4. Baixa ZIP e faz parse dos JSONs (1 por conta)
         r_zip = requests.get(url_zip, timeout=120)
         r_zip.raise_for_status()
 
-        with zipfile.ZipFile(io.BytesIO(r_zip.content)) as z:
-            conteudo = z.read(z.namelist()[0])
+        df = _parse_posicao_zip(r_zip.content)
 
-        df = None
-        for encoding in ["utf-8", "latin1", "cp1252"]:
-            try:
-                df = pd.read_csv(io.BytesIO(conteudo), sep=None, engine="python", encoding=encoding)
-                break
-            except Exception:
-                continue
-
-        if df is None or df.empty:
-            registrar_log(atividade, "Erro", 0, "CSV vazio ou nao parseavel")
+        if df.empty:
+            registrar_log(atividade, "Erro", 0, "ZIP sem posicoes parseáveis")
             return
 
-        # 5. Mapeamento de colunas API → schema da tabela posicao
-        # TODO: preencher após rodar GET /trigger/inspecionar-posicao e inspecionar colunas reais
-        RENAME_POSICAO = {
-            # "coluna_api": "Coluna DB",
-        }
-        df.rename(columns=RENAME_POSICAO, inplace=True)
-        df.drop(columns=["ESCRITÓRIO"], errors="ignore", inplace=True)
-
-        # 6. Converte VENCIMENTO para datetime se existir
-        if "VENCIMENTO" in df.columns:
-            df["VENCIMENTO"] = pd.to_datetime(df["VENCIMENTO"], errors="coerce")
-
-        # 7. Merge com base_btg para adicionar Assessor
+        # 5. Merge com base_btg para adicionar Assessor
         engine = get_engine()
         with engine.connect() as conn:
             base_ref = pd.read_sql("SELECT Conta, Assessor FROM dbo.base_btg", conn)
@@ -1863,38 +1993,15 @@ def webhook_posicao():
                           f"URL bloqueada por politica SSRF: {url_zip}")
             return jsonify({"erro": "URL nao autorizada"}), 400
 
-        # Baixa e extrai CSV do ZIP
+        # Baixa ZIP e faz parse dos JSONs (1 por conta)
         r_zip = requests.get(url_zip, timeout=120)
         r_zip.raise_for_status()
 
-        with zipfile.ZipFile(io.BytesIO(r_zip.content)) as z:
-            conteudo = z.read(z.namelist()[0])
+        df = _parse_posicao_zip(r_zip.content)
 
-        df = None
-        for encoding in ["utf-8", "latin1", "cp1252"]:
-            try:
-                df = pd.read_csv(
-                    io.BytesIO(conteudo), sep=None,
-                    engine="python", encoding=encoding
-                )
-                break
-            except Exception:
-                continue
-
-        if df is None or df.empty:
-            registrar_log(atividade, "Erro", 0, "CSV vazio ou nao parseavel")
-            return jsonify({"erro": "CSV invalido"}), 400
-
-        # TODO: preencher apos inspecionar colunas reais do CSV
-        # Chamar GET /trigger/inspecionar-posicao para obter os nomes das colunas
-        RENAME_POSICAO = {
-            # "coluna_api": "Coluna DB",
-        }
-        df.rename(columns=RENAME_POSICAO, inplace=True)
-        df.drop(columns=["ESCRITÓRIO"], errors="ignore", inplace=True)
-
-        if "VENCIMENTO" in df.columns:
-            df["VENCIMENTO"] = pd.to_datetime(df["VENCIMENTO"], errors="coerce")
+        if df.empty:
+            registrar_log(atividade, "Erro", 0, "ZIP sem posicoes parseáveis")
+            return jsonify({"erro": "ZIP invalido"}), 400
 
         # Adiciona Assessor via base_btg
         engine = get_engine()
